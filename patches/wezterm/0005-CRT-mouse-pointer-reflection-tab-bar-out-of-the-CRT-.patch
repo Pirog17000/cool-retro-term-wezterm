@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: cool-retro-term-wezterm <build@localhost>
 Date: Mon, 16 Nov 2026 20:04:41 +0100
-Subject: [PATCH 5/8] CRT: mouse pointer reflection; tab bar out of the CRT
+Subject: [PATCH 5/9] CRT: mouse pointer reflection; tab bar out of the CRT
  scene; reflecting corners
 
 Pointer reflection (crt.pointer_reflection, 0..1, default 0.5):

@@ -29,17 +29,18 @@ M.effects = {
   { 'glowing_line', 'Glowing line' },
   { 'flickering', 'Flickering' },
   { 'horizontal_sync', 'Horizontal sync' },
-  { 'screen_curvature', 'Screen curvature' },
   { 'rgb_shift', 'RGB shift' },
   { 'brightness', 'Brightness' },
   { 'contrast', 'Contrast' },
   { 'chroma_color', 'Chroma color' },
   { 'saturation_color', 'Saturation' },
   { 'ambient_light', 'Ambient light' },
-  { 'frame_size', 'Frame size' },
   { 'frame_shininess', 'Frame shininess' },
-  { 'screen_radius', 'Screen radius' },
   { 'pointer_reflection', 'Pointer reflection' },
+  -- the screen shape, kept together at the end of the sliders
+  { 'screen_curvature', 'Screen curvature', shape = true },
+  { 'frame_size', 'Frame size', shape = true },
+  { 'screen_radius', 'Screen radius', shape = true },
 }
 
 -- Effects that are not part of cool-retro-term's profiles: their defaults
@@ -414,13 +415,18 @@ effects_menu = function(window, pane)
     { id = '__toggle', label = string.format('%-19s %s', 'CRT effects', eff.enabled and 'ON   (turn off)' or 'OFF  (turn on)') },
     { id = '__colors', label = swatches() },
   }
-  for _, e in ipairs(M.effects) do
-    table.insert(choices, {
-      id = e[1],
-      label = e[2], -- the slider column follows the widest label
-      slider = { value = tonumber(eff[e[1]]) or 0, min = 0, max = 1, step = 0.05 },
-    })
+  local function add_sliders(shape)
+    for _, e in ipairs(M.effects) do
+      if (e.shape or false) == shape then
+        table.insert(choices, {
+          id = e[1],
+          label = e[2], -- the slider column follows the widest label
+          slider = { value = tonumber(eff[e[1]]) or 0, min = 0, max = 1, step = 0.05 },
+        })
+      end
+    end
   end
+  add_sliders(false)
   local raster_names = {}
   for i = 0, 4 do raster_names[i + 1] = M.rasterization_names[i] end
   table.insert(choices, {
@@ -428,6 +434,7 @@ effects_menu = function(window, pane)
     label = 'Rasterization',
     slider = { value = eff.rasterization or 0, min = 0, max = 4, step = 1, names = raster_names },
   })
+  add_sliders(true) -- screen curvature, frame size, screen radius
   table.insert(choices, {
     id = '__phosphor',
     label = string.format('%-19s %s  ', 'Phosphor color', tostring(eff.font_color)) .. phosphor_square(),

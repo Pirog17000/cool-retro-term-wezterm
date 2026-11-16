@@ -73,12 +73,13 @@ saved in `crt_state.json` next to the exe and applied to all windows at once.
 In **CRT effects** every value is a slider: Left/Right (or h/l) move it in
 steps of 0.05, Shift+Left/Right in steps of 0.01, and the change shows on the
 screen right away while the menu stays open; Enter still opens the list of
-values with the profile default.  Most of the bezel comes from the margin the
-bulge leaves around the picture, not from **Frame size**; so that a frame
-size of 0 means no bezel, below 0.10 that margin shrinks as well (at 0 the
-screen reaches the window edges in the middle of each side and only the
-corners curve away); from 0.10 up the bezel is cool-retro-term's, as in
-every curved profile.  A **Colors** row shows the 16 terminal
+values with the profile default.  The screen shape settings sit together at
+the end and act on their own: **Screen curvature** only bulges the picture
+(and pulls its corners in), **Frame size** alone sets the bezel in the
+middle of the edges (0 = none; 0.1 = 24 px, 0.5 = 67 px), **Screen radius**
+rounds the corners.  (In cool-retro-term the bulge also leaves a margin
+around the picture that makes up most of the bezel.)  A **Colors** row shows
+the 16 terminal
 colors through the CRT, so you can see how chroma, saturation, contrast or
 the phosphor change them, and **Phosphor color** has a square in the color
 the screen gives it.  (wezterm gets an optional

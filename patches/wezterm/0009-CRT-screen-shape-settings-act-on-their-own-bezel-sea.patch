@@ -1,0 +1,114 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: cool-retro-term-wezterm <build@localhost>
+Date: Mon, 16 Nov 2026 20:57:21 +0100
+Subject: [PATCH 9/9] CRT: screen shape settings act on their own; bezel seams
+ into the corners
+
+The frame size alone sets the bezel in the middle of the edges (300 f /
+(1 + 2.5 f) pixels, close to what the curved profiles had as frame plus
+curvature margin); the curvature only bulges the picture and pulls its
+corners in, it no longer adds a margin around it.  The bezel panels now
+meet along seams from each window corner to the screen corner next to it;
+the diagonals of the content missed the window corners on wide windows
+and with a strong bulge.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ wezterm-gui/src/crt/mod.rs       | 28 ++++++++++++++--------------
+ wezterm-gui/src/crt/shaders.glsl | 24 ++++++++++++++++--------
+ 2 files changed, 30 insertions(+), 22 deletions(-)
+
+diff --git a/wezterm-gui/src/crt/mod.rs b/wezterm-gui/src/crt/mod.rs
+index a670cf3..5526915 100644
+--- a/wezterm-gui/src/crt/mod.rs
++++ b/wezterm-gui/src/crt/mod.rs
+@@ -135,12 +135,12 @@ impl ScreenRect {
+ /// per axis so that it is measured against the mean of width and height.  A
+ /// square window looks exactly as in cool-retro-term.
+ ///
+-/// The bezel in the middle of an edge is mostly the margin the bulge leaves
+-/// (the frame size adds a few pixels on top).  So that a frame size of 0
+-/// really means no bezel, below FRAME_SIZE_FULL that margin shrinks too:
+-/// at 0 the screen reaches the window edges in the middle of every side and
+-/// only the corners curve away.  From FRAME_SIZE_FULL up (every curved
+-/// profile) the bezel is cool-retro-term's.
++/// The three shape settings act on their own (in cool-retro-term the bulge
++/// also leaves a margin around the picture, which made up most of the
++/// bezel):
++/// - frame size alone sets the bezel in the middle of the edges (bezel_px),
++/// - screen curvature alone bulges the picture and pulls its corners in,
++/// - screen radius alone rounds the corners (in the frame shader).
+ struct Geometry {
+     curvature: f32,
+     /// per axis scale of the window coordinates around the centre before
+@@ -152,8 +152,6 @@ struct Geometry {
+     aspect: [f32; 2],
+ }
+ 
+-const FRAME_SIZE_FULL: f32 = 0.1;
+-
+ /// How far from the centre, in padded units, the bulge reaches the edge of
+ /// the content in the middle of an edge: solves c + a k c^3 (1 + k c^2) = 0.5.
+ fn edge_reach(k: f32, a: f32) -> f32 {
+@@ -174,18 +172,20 @@ fn geometry(p: &CrtParams, w: f32, h: f32) -> Geometry {
+     let (w, h) = (w.max(1.0), h.max(1.0));
+     let normalized_window_scale = 1024.0 / (0.5 * w + 0.5 * h);
+     let curvature = p.screen_curvature * 0.6 * normalized_window_scale;
+-    // what a square window of the same mean size gets, in pixels
+-    let frame_px = p.frame_size * 0.05 * normalized_window_scale * 0.5 * (w + h);
+     let mean = 0.5 * (w + h);
+     let aspect = [mean / w, mean / h];
+-    let keep = (p.frame_size / FRAME_SIZE_FULL).clamp(0.0, 1.0);
++    // Bezel in pixels, the same on every side.  The curve keeps the curved
++    // profiles close to the bezel they had in cool-retro-term (frame plus
++    // curvature margin): 0.1 -> 24 px, 0.2 -> 40, 0.5 -> 67.
++    let frame = p.frame_size.max(0.0);
++    let frame_px = 300.0 * frame / (1.0 + 2.5 * frame);
+     let mut scale = [1.0f32; 2];
+     let mut bezel_px = [0.0f32; 2];
+     for (i, dim) in [w, h].into_iter().enumerate() {
+-        // cool-retro-term pads by the frame (scale 1 + 2f), then bulges
+-        let padded = 1.0 + 2.0 * frame_px / dim;
++        // the bulge reaches the edge of the content at `reach`; put that
++        // exactly frame_px from the window edge
+         let reach = edge_reach(curvature, aspect[i]);
+-        let bezel = ((0.5 - reach / padded).max(0.0) * keep).min(0.45);
++        let bezel = (frame_px / dim).min(0.45);
+         scale[i] = reach / (0.5 - bezel);
+         bezel_px[i] = bezel * dim;
+     }
+diff --git a/wezterm-gui/src/crt/shaders.glsl b/wezterm-gui/src/crt/shaders.glsl
+index 095a789..106240d 100644
+--- a/wezterm-gui/src/crt/shaders.glsl
++++ b/wezterm-gui/src/crt/shaders.glsl
+@@ -145,14 +145,22 @@ void main() {
+     float edgeSoftPixels = 1.0;
+     float seamWidth = max(screenRadiusPixels, 0.5) / min2(viewportSize);
+ 
+-    float e = min(smoothstep(-seamWidth, seamWidth, coords.x - coords.y),
+-                  smoothstep(-seamWidth, seamWidth, coords.x - (1.0 - coords.y)));
+-    float s = min(smoothstep(-seamWidth, seamWidth, coords.y - coords.x),
+-                  smoothstep(-seamWidth, seamWidth, coords.x - (1.0 - coords.y)));
+-    float w = min(smoothstep(-seamWidth, seamWidth, coords.y - coords.x),
+-                  smoothstep(-seamWidth, seamWidth, (1.0 - coords.x) - coords.y));
+-    float n = min(smoothstep(-seamWidth, seamWidth, coords.x - coords.y),
+-                  smoothstep(-seamWidth, seamWidth, (1.0 - coords.x) - coords.y));
++    // The bezel panels meet along seams from each window corner to the
++    // screen corner next to it.  (cool-retro-term uses the diagonals of the
++    // content, which miss the window corners on a wide window or a strong
++    // bulge.)  cornerOut: how far the window corner lies outside the screen
++    // corner, in content units; the same for all four corners.
++    vec2 cornerOut = max(-distortCoordinates(vec2(0.0)), vec2(1e-4));
++    vec2 outside = vec2(coords.x < 0.5 ? -coords.x : coords.x - 1.0,
++                        coords.y < 0.5 ? -coords.y : coords.y - 1.0);
++    float side = smoothstep(-seamWidth, seamWidth,
++                            (outside.x * cornerOut.y - outside.y * cornerOut.x) / length(cornerOut));
++    float right = step(0.5, coords.x);
++    float bottom = step(0.5, coords.y);
++    float e = side * right;
++    float w = side * (1.0 - right);
++    float s = (1.0 - side) * bottom;
++    float n = (1.0 - side) * (1.0 - bottom);
+ 
+     float distPixels = roundedRectSdfPixels(coords, vec2(0.0), vec2(1.0), screenRadiusPixels);
+     float frameShadow = (e * 0.66 + w * 0.66 + n * 0.33 + s);
