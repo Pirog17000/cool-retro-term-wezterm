@@ -235,14 +235,18 @@ end
 ---------------------------------------------------------------------------
 -- Settings menu
 --
--- Navigation: Enter picks, Esc goes one level up (Esc in the main menu
--- closes it).  After a value is picked the menu returns to the list it came
--- from, so several values can be tuned in a row.
+-- Navigation: arrow keys (or j/k) move, Enter picks, Esc goes one level up
+-- (Esc in the main menu closes it), / searches.  After a value is picked the
+-- menu returns to the list it came from, so several values can be tuned in a
+-- row.  The main menu holds only the main categories.
 
 local function selector(window, pane, title, choices, on_pick, on_back)
+  local esc = on_back and 'Esc = back' or 'Esc = close'
   window:perform_action(
     act.InputSelector {
       title = title,
+      description = title .. '      Up/Down = move, Enter = choose, ' .. esc .. ', / = search',
+      alphabet = '', -- no number labels: arrow keys only
       choices = choices,
       fuzzy = false,
       action = wezterm.action_callback(function(w, p, id, _label)
@@ -322,7 +326,7 @@ local function value_menu(window, pane, key, label)
     local mark = (type(cur) == 'number' and math.abs(cur - v) < 0.001) and '> ' or '  '
     table.insert(choices, { id = tostring(v), label = mark .. fmt(v) })
   end
-  selector(window, pane, 'Settings > Effects > ' .. label, choices, function(w, p2, id)
+  selector(window, pane, 'Settings > CRT effects > ' .. label, choices, function(w, p2, id)
     update_state(function(s)
       s[key] = (id ~= '__profile') and tonumber(id) or nil
     end)
@@ -339,7 +343,7 @@ local function rasterization_menu(window, pane)
       label = (eff.rasterization == i and '> ' or '  ') .. M.rasterization_names[i],
     })
   end
-  selector(window, pane, 'Settings > Effects > Rasterization', choices, function(w, p, id)
+  selector(window, pane, 'Settings > CRT effects > Rasterization', choices, function(w, p, id)
     update_state(function(s) s.rasterization = (id ~= '__profile') and tonumber(id) or nil end)
     effects_menu(w, p)
   end, function(w, p) effects_menu(w, p) end)
@@ -352,7 +356,7 @@ local function phosphor_menu(window, pane)
     local mark = (tostring(eff.font_color):lower() == ph[2]) and '> ' or '  '
     table.insert(choices, { id = ph[2], label = mark .. ph[1] .. '  ' .. ph[2] })
   end
-  selector(window, pane, 'Settings > Effects > Phosphor color', choices, function(w, p2, id)
+  selector(window, pane, 'Settings > CRT effects > Phosphor color', choices, function(w, p2, id)
     update_state(function(s) s.font_color = (id ~= '__profile') and id or nil end)
     effects_menu(w, p2)
   end, function(w, p2) effects_menu(w, p2) end)
@@ -360,7 +364,9 @@ end
 
 effects_menu = function(window, pane)
   local _, _, eff = current(window)
-  local choices = {}
+  local choices = {
+    { id = '__toggle', label = string.format('%-18s %s', 'CRT effects', eff.enabled and 'ON   (turn off)' or 'OFF  (turn on)') },
+  }
   for _, e in ipairs(M.effects) do
     table.insert(choices, { id = e[1], label = string.format('%-18s %s', e[2], fmt(eff[e[1]])) })
   end
@@ -372,7 +378,19 @@ effects_menu = function(window, pane)
     id = '__phosphor',
     label = string.format('%-18s %s', 'Phosphor color', tostring(eff.font_color)),
   })
-  selector(window, pane, 'Settings > Effects   (Esc = back)', choices, function(w, p, id)
+  table.insert(choices, {
+    id = '__reset',
+    label = string.format('%-18s %s', 'Reset CRT', 'profile, font and effects back to wezterm.lua'),
+  })
+  selector(window, pane, 'Settings > CRT effects', choices, function(w, p, id)
+    if id == '__toggle' then
+      update_state(function(s) s.enabled = not eff.enabled end)
+      return effects_menu(w, p)
+    end
+    if id == '__reset' then
+      M.save_state {}
+      return effects_menu(w, p)
+    end
     if id == '__raster' then return rasterization_menu(w, p) end
     if id == '__phosphor' then return phosphor_menu(w, p) end
     for _, e in ipairs(M.effects) do
@@ -387,38 +405,27 @@ menu = function(window, pane)
   local choices = {
     { id = 'profile', label = 'Profile ........ ' .. name },
     { id = 'font', label = 'Font ........... ' .. (font and font.name or '?') },
-    { id = 'effects', label = 'CRT effects .... tune bloom, noise, curvature ...' },
-    { id = 'toggle', label = 'CRT effects .... ' .. (eff.enabled and 'ON  (turn off)' or 'OFF (turn on)') },
-    { id = 'options', label = 'All options .... every wezterm setting (' .. options.count() .. '), by category' },
-    { id = 'reset', label = 'Reset CRT ...... profile, font and effects back to wezterm.lua' },
+    { id = 'effects', label = 'CRT effects .... ' .. (eff.enabled and 'ON' or 'OFF') .. ', bloom, noise, curvature, frame ...' },
     { id = 'fullscreen', label = 'Full screen .... F11 / Alt+Enter' },
-    { id = 'edit', label = 'Edit wezterm.lua (every wezterm option)' },
-    { id = 'reload', label = 'Reload configuration' },
-    { id = 'palette', label = 'All commands (command palette)' },
+    { id = 'settings', label = 'Settings ....... all wezterm settings (' .. options.count() .. ') by category' },
+    { id = 'reset_settings', label = 'Reset settings . ' .. (function()
+      local n = options.changed()
+      return n > 0 and (n .. ' changed, back to wezterm.lua / defaults') or 'nothing changed'
+    end)() },
   }
-  selector(window, pane, 'Settings   (Esc = close)', choices, function(w, p2, id)
+  selector(window, pane, 'Settings', choices, function(w, p2, id)
     if id == 'profile' then
       profiles_menu(w, p2)
     elseif id == 'font' then
       fonts_menu(w, p2)
     elseif id == 'effects' then
       effects_menu(w, p2)
-    elseif id == 'toggle' then
-      update_state(function(s) s.enabled = not eff.enabled end)
-      menu(w, p2)
-    elseif id == 'options' then
-      options.menu(w, p2, menu)
-    elseif id == 'reset' then
-      M.save_state {}
-      menu(w, p2)
     elseif id == 'fullscreen' then
       w:toggle_fullscreen()
-    elseif id == 'edit' then
-      wezterm.background_child_process { 'notepad.exe', wezterm.config_file }
-    elseif id == 'reload' then
-      w:perform_action(act.ReloadConfiguration, p2)
-    elseif id == 'palette' then
-      w:perform_action(act.ActivateCommandPalette, p2)
+    elseif id == 'settings' then
+      options.menu(w, p2, menu)
+    elseif id == 'reset_settings' then
+      options.reset_menu(w, p2, menu)
     end
   end, nil)
 end
@@ -437,7 +444,7 @@ function M.setup(config)
   end)
   config.keys = config.keys or {}
   table.insert(config.keys, { key = ',', mods = 'CTRL|SHIFT', action = act.EmitEvent 'crt-open-settings' })
-  -- Options changed in Settings > All options (wezterm_options.json) win over
+  -- Values changed in the Settings submenu (wezterm_options.json) win over
   -- what wezterm.lua set before this call.
   options.apply(config)
   return config

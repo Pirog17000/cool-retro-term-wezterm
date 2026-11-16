@@ -266,13 +266,14 @@ local APPLIES = {
 ---------------------------------------------------------------------------
 -- Menu plumbing
 
-local HINT = '   Enter = choose, Esc = back, / = search'
+local HINT = '      Up/Down = move, Enter = choose, Esc = back, / = search'
 
 local function selector(window, pane, crumbs, choices, on_pick, on_back, fuzzy)
   window:perform_action(
     act.InputSelector {
       title = crumbs,
       description = crumbs .. HINT,
+      alphabet = '', -- no number labels: arrow keys only
       choices = choices,
       fuzzy = fuzzy or false,
       action = wezterm.action_callback(function(w, p, id, _label)
@@ -509,7 +510,7 @@ editor = function(window, pane, key, crumbs, back)
     return (v == x) and '> ' or '  '
   end
 
-  -- Actions first, so that Enter and the number keys reach them directly
+  -- Actions first, so the cursor starts on them
   if t == 'bool' then
     item('true', mark(true) .. 'true')
     item('false', mark(false) .. 'false')
@@ -682,13 +683,9 @@ root = function(window, pane, back)
   local o = M.load()
   local all = all_keys()
   local n_changed = changed_count(o, all)
-  local crumbs = 'Settings > wezterm options'
-  local choices = {
-    { id = '__search', label = string.format('  Search all %d options ...', #all) },
-  }
-  if n_changed > 0 then
-    table.insert(choices, { id = '__changed', label = string.format('  Changed in this menu (%d)', n_changed) })
-  end
+  local crumbs = 'Settings > wezterm settings'
+  local choices = {}
+  -- the categories first, then search and the wezterm.lua tools
   for i, c in ipairs(cat.categories) do
     local n = changed_count(o, c.keys)
     table.insert(choices, {
@@ -696,12 +693,19 @@ root = function(window, pane, back)
       label = string.format('  %-38s %3d', c.name, #c.keys) .. dim(n > 0 and string.format('   %d changed', n) or ''),
     })
   end
+  table.insert(choices, { id = '__sep', label = dim('  ' .. string.rep('-', 44)) })
+  table.insert(choices, { id = '__search', label = string.format('  Search all %d settings ...', #all) })
   if n_changed > 0 then
-    table.insert(choices, { id = '__reset_all', label = '  Reset all options changed in this menu' })
+    table.insert(choices, { id = '__changed', label = string.format('  Changed settings (%d)', n_changed) })
   end
+  table.insert(choices, { id = '__edit', label = '  Edit wezterm.lua (key bindings, domains, ...)' })
+  table.insert(choices, { id = '__reload', label = '  Reload configuration' })
+  table.insert(choices, { id = '__palette', label = '  All commands (command palette)' })
   local function again(w, p) root(w, p, back) end
   selector(window, pane, crumbs, choices, function(w, p, id)
-    if id == '__search' then
+    if id == '__sep' then
+      return again(w, p)
+    elseif id == '__search' then
       return options_list(w, p, crumbs .. ' > search', all_keys(), again, true)
     elseif id == '__changed' then
       local o2 = M.load()
@@ -710,14 +714,12 @@ root = function(window, pane, back)
         if o2[k] ~= nil then table.insert(keys, k) end
       end
       return options_list(w, p, crumbs .. ' > changed', keys, again)
-    elseif id == '__reset_all' then
-      return selector(w, p, crumbs .. ' > reset all', {
-        { id = 'no', label = '  No, keep them' },
-        { id = 'yes', label = string.format('  Yes, reset %d options', n_changed) },
-      }, function(w2, p2, ans)
-        if ans == 'yes' then M.save({}) end
-        again(w2, p2)
-      end, again)
+    elseif id == '__edit' then
+      wezterm.background_child_process { 'notepad.exe', wezterm.config_file }
+    elseif id == '__reload' then
+      w:perform_action(act.ReloadConfiguration, p)
+    elseif id == '__palette' then
+      w:perform_action(act.ActivateCommandPalette, p)
     else
       local i = tonumber(id:match('^cat:(%d+)$'))
       local c = cat.categories[i]
@@ -726,9 +728,31 @@ root = function(window, pane, back)
   end, back)
 end
 
---- Open the options menu; `back(window, pane)` is called on Esc.
+--- Open the settings (all categories); `back(window, pane)` is called on Esc.
 function M.menu(window, pane, back)
   root(window, pane, back)
+end
+
+--- Number of settings changed in the menu.
+function M.changed()
+  return changed_count(M.load(), all_keys())
+end
+
+--- Ask, then reset every setting changed in the menu; returns to `back`.
+function M.reset_menu(window, pane, back)
+  local n = M.changed()
+  if n == 0 then
+    return selector(window, pane, 'Settings > Reset settings', {
+      { id = 'ok', label = '  Nothing to reset: no setting was changed in the menu' },
+    }, function(w, p) back(w, p) end, back)
+  end
+  selector(window, pane, 'Settings > Reset settings', {
+    { id = 'no', label = '  No, keep them' },
+    { id = 'yes', label = string.format('  Yes, reset %d changed settings to wezterm.lua / defaults', n) },
+  }, function(w, p, ans)
+    if ans == 'yes' then M.save({}) end
+    back(w, p)
+  end, back)
 end
 
 --- Number of options in the catalog (for the menu label).
