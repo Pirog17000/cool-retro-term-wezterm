@@ -24,7 +24,8 @@ config.check_for_updates = false
 -- double-click it to maximize.
 config.window_decorations = 'INTEGRATED_BUTTONS|RESIZE'
 config.integrated_title_button_style = 'Windows'
-config.integrated_title_buttons = { 'Hide', 'Maximize', 'Close' }
+-- 'Settings' (gear) opens the settings menu, also on Ctrl+Shift+,
+config.integrated_title_buttons = { 'Settings', 'Hide', 'Maximize', 'Close' }
 config.integrated_title_button_alignment = 'Right'
 config.hide_tab_bar_if_only_one_tab = false -- keep the bar: it holds the buttons
 config.use_fancy_tab_bar = true
@@ -60,8 +61,11 @@ end
 --   font_color, background_color, frame_color ("#rrggbb"),
 --   pixel_size, bloom_quality, burn_in_quality, fps, enabled
 -- style_window = false keeps wezterm's default title bar colors.
+-- Choices made in the settings menu (gear button) are stored in
+-- crt_state.json next to the exe and take precedence over this block.
 crt.apply(config, {
   profile = 'Default Amber',
 })
+crt.setup(config)
 
 return config

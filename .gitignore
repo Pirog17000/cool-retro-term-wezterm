@@ -88,3 +88,4 @@ wezbridge/target/
 cool-retro-term-debug.log
 /dist-wezterm/
 *.zip
+/dist-wezterm/crt_state.json

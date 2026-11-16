@@ -1,0 +1,324 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: cool-retro-term-wezterm <build@localhost>
+Date: Mon, 16 Nov 2026 16:46:54 +0100
+Subject: [PATCH 3/3] Settings (gear) button for the integrated title bar
+
+- IntegratedTitleButton::Settings with a gear icon (Windows/Gnome styles)
+  and a ' * ' text form for the retro tab bar (tab_bar_style.window_settings)
+- clicking it emits the 'settings-button-click' Lua event (window, pane);
+  without a handler, or when the handler does not return false, the
+  command palette opens
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ config/src/color.rs                           | 10 ++
+ wezterm-gui/src/tabbar.rs                     | 29 ++++++
+ wezterm-gui/src/termwindow/mouseevent.rs      | 44 +++++++++
+ .../src/termwindow/render/window_buttons.rs   | 97 ++++++++++++++++++-
+ wezterm-input-types/src/lib.rs                |  3 +
+ 5 files changed, 178 insertions(+), 5 deletions(-)
+
+diff --git a/config/src/color.rs b/config/src/color.rs
+index d376157..f3e03e5 100644
+--- a/config/src/color.rs
++++ b/config/src/color.rs
+@@ -538,6 +538,10 @@ pub struct TabBarStyle {
+     pub window_close: String,
+     #[dynamic(default = "default_window_close")]
+     pub window_close_hover: String,
++    #[dynamic(default = "default_window_settings")]
++    pub window_settings: String,
++    #[dynamic(default = "default_window_settings")]
++    pub window_settings_hover: String,
+ }
+ 
+ impl Default for TabBarStyle {
+@@ -551,6 +555,8 @@ impl Default for TabBarStyle {
+             window_maximize_hover: default_window_maximize(),
+             window_close: default_window_close(),
+             window_close_hover: default_window_close(),
++            window_settings: default_window_settings(),
++            window_settings_hover: default_window_settings(),
+         }
+     }
+ }
+@@ -571,6 +577,10 @@ fn default_window_close() -> String {
+     " X ".to_string()
+ }
+ 
++fn default_window_settings() -> String {
++    " * ".to_string()
++}
++
+ #[derive(Debug, Clone, FromDynamic, ToDynamic)]
+ pub struct WindowFrameConfig {
+     #[dynamic(default = "default_inactive_titlebar_bg")]
+diff --git a/wezterm-gui/src/tabbar.rs b/wezterm-gui/src/tabbar.rs
+index e853c63..e6230d7 100644
+--- a/wezterm-gui/src/tabbar.rs
++++ b/wezterm-gui/src/tabbar.rs
+@@ -370,6 +370,13 @@ impl TabBarState {
+             default_cell_hover.clone(),
+         );
+ 
++        let window_settings =
++            parse_status_text(&config.tab_bar_style.window_settings, default_cell.clone());
++        let window_settings_hover = parse_status_text(
++            &config.tab_bar_style.window_settings_hover,
++            default_cell_hover.clone(),
++        );
++
+         for button in &config.integrated_title_buttons {
+             use IntegratedTitleButton as Button;
+             let title = match button {
+@@ -400,6 +407,15 @@ impl TabBarState {
+                         &window_close
+                     }
+                 }
++                Button::Settings => {
++                    let hover = is_tab_hover(mouse_x, *x, window_settings_hover.len());
++
++                    if hover {
++                        &window_settings_hover
++                    } else {
++                        &window_settings
++                    }
++                }
+             };
+ 
+             line.append_line(title.to_owned(), SEQ_ZERO);
+@@ -652,6 +668,18 @@ impl TabBarState {
+             let hide_len = window_hide.len().max(window_hide_hover.len());
+             let maximize_len = window_maximize.len().max(window_maximize_hover.len());
+             let close_len = window_close.len().max(window_close_hover.len());
++            let settings_len = parse_status_text(
++                &config.tab_bar_style.window_settings,
++                CellAttributes::default(),
++            )
++            .len()
++            .max(
++                parse_status_text(
++                    &config.tab_bar_style.window_settings_hover,
++                    CellAttributes::default(),
++                )
++                .len(),
++            );
+ 
+             let mut width_to_reserve = 0;
+             for button in &config.integrated_title_buttons {
+@@ -660,6 +688,7 @@ impl TabBarState {
+                     Button::Hide => hide_len,
+                     Button::Maximize => maximize_len,
+                     Button::Close => close_len,
++                    Button::Settings => settings_len,
+                 };
+                 width_to_reserve += button_len;
+             }
+diff --git a/wezterm-gui/src/termwindow/mouseevent.rs b/wezterm-gui/src/termwindow/mouseevent.rs
+index 4631863..73de85c 100644
+--- a/wezterm-gui/src/termwindow/mouseevent.rs
++++ b/wezterm-gui/src/termwindow/mouseevent.rs
+@@ -457,6 +457,49 @@ impl super::TermWindow {
+         .detach();
+     }
+ 
++    /// The settings (gear) title bar button: emits `settings-button-click`
++    /// (window, pane).  When no handler is registered, or a handler returns
++    /// something other than `false`, the command palette is opened.
++    fn do_settings_button_click(&mut self) {
++        let pane = match self.get_active_pane_or_overlay() {
++            Some(pane) => pane,
++            None => return,
++        };
++
++        async fn dispatch_settings_button(
++            lua: Option<Rc<mlua::Lua>>,
++            window: GuiWin,
++            pane: MuxPane,
++        ) -> anyhow::Result<()> {
++            let default_action = match lua {
++                Some(lua) => {
++                    let args = lua.pack_multi((window.clone(), pane))?;
++                    config::lua::emit_event(&lua, ("settings-button-click".to_string(), args))
++                        .await
++                        .map_err(|e| {
++                            log::error!("while processing settings-button-click event: {:#}", e);
++                            e
++                        })?
++                }
++                None => true,
++            };
++            if default_action {
++                window.window.notify(TermWindowNotif::PerformAssignment {
++                    pane_id: pane.0,
++                    assignment: KeyAssignment::ActivateCommandPalette,
++                    tx: None,
++                });
++            }
++            Ok(())
++        }
++        let window = GuiWin::new(self);
++        let pane = MuxPane(pane.pane_id());
++        promise::spawn::spawn(config::with_lua_config_on_main_thread(move |lua| {
++            dispatch_settings_button(lua, window, pane)
++        }))
++        .detach();
++    }
++
+     pub fn mouse_event_tab_bar(
+         &mut self,
+         item: TabBarItem,
+@@ -510,6 +553,7 @@ impl super::TermWindow {
+                                 }
+                             }
+                             Button::Close => self.close_requested(&window.clone()),
++                            Button::Settings => self.do_settings_button_click(),
+                         }
+                     }
+                 }
+diff --git a/wezterm-gui/src/termwindow/render/window_buttons.rs b/wezterm-gui/src/termwindow/render/window_buttons.rs
+index d8bf607..9a68440 100644
+--- a/wezterm-gui/src/termwindow/render/window_buttons.rs
++++ b/wezterm-gui/src/termwindow/render/window_buttons.rs
+@@ -96,6 +96,49 @@ mod windows {
+         },
+     ];
+ 
++
++    /// Gear: ring + eight teeth + hub.
++    pub const SETTINGS: &[Poly] = &[
++        Poly {
++            path: &[PolyCommand::Circle {
++                center: (BlockCoord::Frac(1, 2), BlockCoord::Frac(1, 2)),
++                radius: BlockCoord::Frac(3, 10),
++            }],
++            intensity: BlockAlpha::Full,
++            style: PolyStyle::OutlineThin,
++        },
++        Poly {
++            path: &[PolyCommand::Circle {
++                center: (BlockCoord::Frac(1, 2), BlockCoord::Frac(1, 2)),
++                radius: BlockCoord::Frac(1, 10),
++            }],
++            intensity: BlockAlpha::Full,
++            style: PolyStyle::OutlineThin,
++        },
++        Poly {
++            path: &[
++                PolyCommand::MoveTo(BlockCoord::Frac(10, 20), BlockCoord::Frac(4, 20)),
++                PolyCommand::LineTo(BlockCoord::Frac(10, 20), BlockCoord::Zero),
++                PolyCommand::MoveTo(BlockCoord::Frac(10, 20), BlockCoord::Frac(16, 20)),
++                PolyCommand::LineTo(BlockCoord::Frac(10, 20), BlockCoord::One),
++                PolyCommand::MoveTo(BlockCoord::Frac(4, 20), BlockCoord::Frac(10, 20)),
++                PolyCommand::LineTo(BlockCoord::Zero, BlockCoord::Frac(10, 20)),
++                PolyCommand::MoveTo(BlockCoord::Frac(16, 20), BlockCoord::Frac(10, 20)),
++                PolyCommand::LineTo(BlockCoord::One, BlockCoord::Frac(10, 20)),
++                PolyCommand::MoveTo(BlockCoord::Frac(6, 20), BlockCoord::Frac(6, 20)),
++                PolyCommand::LineTo(BlockCoord::Frac(3, 20), BlockCoord::Frac(3, 20)),
++                PolyCommand::MoveTo(BlockCoord::Frac(14, 20), BlockCoord::Frac(6, 20)),
++                PolyCommand::LineTo(BlockCoord::Frac(17, 20), BlockCoord::Frac(3, 20)),
++                PolyCommand::MoveTo(BlockCoord::Frac(6, 20), BlockCoord::Frac(14, 20)),
++                PolyCommand::LineTo(BlockCoord::Frac(3, 20), BlockCoord::Frac(17, 20)),
++                PolyCommand::MoveTo(BlockCoord::Frac(14, 20), BlockCoord::Frac(14, 20)),
++                PolyCommand::LineTo(BlockCoord::Frac(17, 20), BlockCoord::Frac(17, 20)),
++            ],
++            intensity: BlockAlpha::Full,
++            style: PolyStyle::OutlineThin,
++        },
++    ];
++
+     pub fn sized_poly(poly: &'static [Poly]) -> SizedPoly {
+         let scale = 72.0 / 96.0;
+         let size = Dimension::Points(10. * scale);
+@@ -184,6 +227,49 @@ mod gnome {
+         style: PolyStyle::Outline,
+     }];
+ 
++
++    /// Gear: ring + eight teeth + hub.
++    pub const SETTINGS: &[Poly] = &[
++        Poly {
++            path: &[PolyCommand::Circle {
++                center: (BlockCoord::Frac(1, 2), BlockCoord::Frac(1, 2)),
++                radius: BlockCoord::Frac(3, 10),
++            }],
++            intensity: BlockAlpha::Full,
++            style: PolyStyle::Outline,
++        },
++        Poly {
++            path: &[PolyCommand::Circle {
++                center: (BlockCoord::Frac(1, 2), BlockCoord::Frac(1, 2)),
++                radius: BlockCoord::Frac(1, 10),
++            }],
++            intensity: BlockAlpha::Full,
++            style: PolyStyle::Outline,
++        },
++        Poly {
++            path: &[
++                PolyCommand::MoveTo(BlockCoord::Frac(10, 20), BlockCoord::Frac(4, 20)),
++                PolyCommand::LineTo(BlockCoord::Frac(10, 20), BlockCoord::Zero),
++                PolyCommand::MoveTo(BlockCoord::Frac(10, 20), BlockCoord::Frac(16, 20)),
++                PolyCommand::LineTo(BlockCoord::Frac(10, 20), BlockCoord::One),
++                PolyCommand::MoveTo(BlockCoord::Frac(4, 20), BlockCoord::Frac(10, 20)),
++                PolyCommand::LineTo(BlockCoord::Zero, BlockCoord::Frac(10, 20)),
++                PolyCommand::MoveTo(BlockCoord::Frac(16, 20), BlockCoord::Frac(10, 20)),
++                PolyCommand::LineTo(BlockCoord::One, BlockCoord::Frac(10, 20)),
++                PolyCommand::MoveTo(BlockCoord::Frac(6, 20), BlockCoord::Frac(6, 20)),
++                PolyCommand::LineTo(BlockCoord::Frac(3, 20), BlockCoord::Frac(3, 20)),
++                PolyCommand::MoveTo(BlockCoord::Frac(14, 20), BlockCoord::Frac(6, 20)),
++                PolyCommand::LineTo(BlockCoord::Frac(17, 20), BlockCoord::Frac(3, 20)),
++                PolyCommand::MoveTo(BlockCoord::Frac(6, 20), BlockCoord::Frac(14, 20)),
++                PolyCommand::LineTo(BlockCoord::Frac(3, 20), BlockCoord::Frac(17, 20)),
++                PolyCommand::MoveTo(BlockCoord::Frac(14, 20), BlockCoord::Frac(14, 20)),
++                PolyCommand::LineTo(BlockCoord::Frac(17, 20), BlockCoord::Frac(17, 20)),
++            ],
++            intensity: BlockAlpha::Full,
++            style: PolyStyle::Outline,
++        },
++    ];
++
+     pub fn sized_poly(poly: &'static [Poly]) -> SizedPoly {
+         let size = Dimension::Pixels(8.);
+         SizedPoly {
+@@ -228,14 +314,14 @@ pub fn window_button_element(
+     }
+ 
+     let poly = {
+-        let (close, hide, maximize, restore) = match style {
++        let (close, hide, maximize, restore, settings) = match style {
+             Style::Windows => {
+-                use self::windows::{CLOSE, HIDE, MAXIMIZE, RESTORE};
+-                (CLOSE, HIDE, MAXIMIZE, RESTORE)
++                use self::windows::{CLOSE, HIDE, MAXIMIZE, RESTORE, SETTINGS};
++                (CLOSE, HIDE, MAXIMIZE, RESTORE, SETTINGS)
+             }
+             Style::Gnome => {
+-                use self::gnome::{CLOSE, HIDE, MAXIMIZE, RESTORE};
+-                (CLOSE, HIDE, MAXIMIZE, RESTORE)
++                use self::gnome::{CLOSE, HIDE, MAXIMIZE, RESTORE, SETTINGS};
++                (CLOSE, HIDE, MAXIMIZE, RESTORE, SETTINGS)
+             }
+             Style::MacOsNative => unreachable!(),
+         };
+@@ -249,6 +335,7 @@ pub fn window_button_element(
+                 }
+             }
+             IntegratedTitleButton::Close => close,
++            IntegratedTitleButton::Settings => settings,
+         };
+ 
+         match style {
+diff --git a/wezterm-input-types/src/lib.rs b/wezterm-input-types/src/lib.rs
+index f5673f6..af1912e 100644
+--- a/wezterm-input-types/src/lib.rs
++++ b/wezterm-input-types/src/lib.rs
+@@ -2131,6 +2131,9 @@ pub enum IntegratedTitleButton {
+     Hide,
+     Maximize,
+     Close,
++    /// Opens the settings menu: emits the `settings-button-click` event,
++    /// falling back to the command palette when nothing handles it.
++    Settings,
+ }
+ 
+ #[derive(Debug, Default, FromDynamic, ToDynamic, PartialEq, Eq, Clone, Copy)]
