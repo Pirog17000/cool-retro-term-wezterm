@@ -1,0 +1,176 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: cool-retro-term-wezterm <build@localhost>
+Date: Mon, 16 Nov 2026 19:11:32 +0100
+Subject: [PATCH 4/4] CRT: same bezel and bulge on every edge of wide windows
+
+cool-retro-term sizes the bezel and the curvature displacement per axis in
+0..1 window units, so on a wide window the side bezels were several times
+thicker than the top and bottom ones and the rounded corners stretched with
+the window.  The bezel now has the same width in pixels on every side and
+the curvature moves every edge by the same number of pixels (displacement
+measured against the mean of width and height).  A square window looks as
+before; mouse mapping uses the same geometry.
+---
+ wezterm-gui/src/crt/mod.rs       | 52 +++++++++++++++++++++++++-------
+ wezterm-gui/src/crt/shaders.glsl | 15 +++++----
+ 2 files changed, 50 insertions(+), 17 deletions(-)
+
+diff --git a/wezterm-gui/src/crt/mod.rs b/wezterm-gui/src/crt/mod.rs
+index 7a35ae6..9cdaf99 100644
+--- a/wezterm-gui/src/crt/mod.rs
++++ b/wezterm-gui/src/crt/mod.rs
+@@ -126,23 +126,49 @@ impl ScreenRect {
+ 
+ /// Curvature/bezel parameters as the shaders see them, for a screen of
+ /// `w` x `h` pixels.
+-fn geometry(p: &CrtParams, w: f32, h: f32) -> (f32, f32) {
+-    let normalized_window_scale = 1024.0 / (0.5 * w + 0.5 * h).max(1.0);
+-    let screen_curvature = p.screen_curvature * 0.6 * normalized_window_scale;
+-    let frame_size = p.frame_size * 0.05 * normalized_window_scale;
+-    (screen_curvature, frame_size)
++///
++/// cool-retro-term sizes the bezel and the bulge per axis in 0..1 window
++/// units, so on a wide window the side bezels get thicker than the top and
++/// bottom ones and the curvature and rounded corners stretch with the window.
++/// Here the bezel has the same width in pixels on every side, and the bulge
++/// moves every edge by the same number of pixels: the displacement is scaled
++/// per axis so that it is measured against the mean of width and height.  A
++/// square window looks exactly as in cool-retro-term.
++struct Geometry {
++    curvature: f32,
++    /// bezel width per axis, in 0..1 units
++    frame: [f32; 2],
++    /// per axis factor for the curvature displacement
++    aspect: [f32; 2],
++}
++
++fn geometry(p: &CrtParams, w: f32, h: f32) -> Geometry {
++    let (w, h) = (w.max(1.0), h.max(1.0));
++    let normalized_window_scale = 1024.0 / (0.5 * w + 0.5 * h);
++    let curvature = p.screen_curvature * 0.6 * normalized_window_scale;
++    // what a square window of the same mean size gets, in pixels
++    let frame_px = p.frame_size * 0.05 * normalized_window_scale * 0.5 * (w + h);
++    let mean = 0.5 * (w + h);
++    Geometry {
++        curvature,
++        frame: [frame_px / w, frame_px / h],
++        aspect: [mean / w, mean / h],
++    }
+ }
+ 
+ /// Same as distortCoordinates() in the shaders: the screen pixel at logical
+ /// position `tc` (0..1) shows the terminal content found at the returned
+ /// logical position.  Used to map mouse positions onto the curved screen.
+ pub fn distort_point(p: &CrtParams, rect: &ScreenRect, tc: (f32, f32)) -> (f32, f32) {
+-    let (screen_curvature, frame_size) = geometry(p, rect.w, rect.h);
+-    let px = tc.0 * (1.0 + frame_size * 2.0) - frame_size;
+-    let py = tc.1 * (1.0 + frame_size * 2.0) - frame_size;
++    let g = geometry(p, rect.w, rect.h);
++    let px = tc.0 * (1.0 + g.frame[0] * 2.0) - g.frame[0];
++    let py = tc.1 * (1.0 + g.frame[1] * 2.0) - g.frame[1];
+     let (cx, cy) = (px - 0.5, py - 0.5);
+-    let dist = (cx * cx + cy * cy) * screen_curvature;
+-    (px + cx * (1.0 + dist) * dist, py + cy * (1.0 + dist) * dist)
++    let dist = (cx * cx + cy * cy) * g.curvature;
++    (
++        px + cx * (1.0 + dist) * dist * g.aspect[0],
++        py + cy * (1.0 + dist) * dist * g.aspect[1],
++    )
+ }
+ 
+ struct Targets {
+@@ -323,7 +349,8 @@ impl CrtRenderer {
+         }
+ 
+         // ---- derived values (mirrors cool-retro-term's QML bindings) -----
+-        let (screen_curvature, frame_size) = geometry(p, wf, hf);
++        let g = geometry(p, wf, hf);
++        let (screen_curvature, frame_size, aspect_scale) = (g.curvature, g.frame, g.aspect);
+         let frame_shininess = p.frame_shininess * 0.5;
+         let screen_radius = lint(4.0, 120.0, p.screen_radius);
+         let bloom = if p.bloom > 0. { p.bloom * 2.5 } else { 0. };
+@@ -401,6 +428,7 @@ impl CrtRenderer {
+                 screenCurvature: screen_curvature,
+                 frameColor: frame_color,
+                 frameSize: frame_size,
++                aspectScale: aspect_scale,
+                 screenRadius: screen_radius,
+                 viewportSize: [wf, hf],
+                 ambientLight: p.ambient_light,
+@@ -418,6 +446,7 @@ impl CrtRenderer {
+                 rgbShift: rgb_shift,
+                 frameShininess: frame_shininess,
+                 frameSize: frame_size,
++                aspectScale: aspect_scale,
+                 screen_brightness: screen_brightness,
+                 bloom: bloom,
+                 curvatureOn: if curvature_on { 1.0f32 } else { 0.0 },
+@@ -466,6 +495,7 @@ impl CrtRenderer {
+             u.add("horizontalSyncStrength", &horizontal_sync_strength);
+             u.add("scaleNoiseSize", &scale_noise_size);
+             u.add("frameSize", &frame_size);
++            u.add("aspectScale", &aspect_scale);
+             u.add("bloom", &bloom);
+             u.add("frameOn", &frame_on_f);
+             u.add("tintOn", &tint_on);
+diff --git a/wezterm-gui/src/crt/shaders.glsl b/wezterm-gui/src/crt/shaders.glsl
+index 355bd0d..4152060 100644
+--- a/wezterm-gui/src/crt/shaders.glsl
++++ b/wezterm-gui/src/crt/shaders.glsl
+@@ -74,7 +74,8 @@ in vec2 tc;
+ out vec4 color;
+ uniform float screenCurvature;
+ uniform vec3 frameColor;
+-uniform float frameSize;
++uniform vec2 frameSize;    // bezel per axis, in uv units (same pixels on all sides)
++uniform vec2 aspectScale;  // bulge per axis: the same displacement in pixels on every edge
+ uniform float screenRadius;
+ uniform vec2 viewportSize;
+ uniform float ambientLight;
+@@ -84,7 +85,7 @@ vec2 distortCoordinates(vec2 coords) {
+     vec2 paddedCoords = coords * (vec2(1.0) + frameSize * 2.0) - frameSize;
+     vec2 cc = (paddedCoords - vec2(0.5));
+     float dist = dot(cc, cc) * screenCurvature;
+-    return (paddedCoords + cc * (1.0 + dist) * dist);
++    return (paddedCoords + cc * (1.0 + dist) * dist * aspectScale);
+ }
+ 
+ float roundedRectSdfPixels(vec2 p, vec2 topLeft, vec2 bottomRight, float radiusPixels) {
+@@ -138,7 +139,8 @@ uniform sampler2D bloomSource;
+ uniform float screenCurvature;
+ uniform float rgbShift;
+ uniform float frameShininess;
+-uniform float frameSize;
++uniform vec2 frameSize;    // bezel per axis, in uv units (same pixels on all sides)
++uniform vec2 aspectScale;  // bulge per axis: the same displacement in pixels on every edge
+ uniform float screen_brightness;
+ uniform float bloom;
+ uniform float curvatureOn;
+@@ -148,7 +150,7 @@ vec2 distortCoordinates(vec2 coords) {
+     vec2 paddedCoords = coords * (vec2(1.0) + frameSize * 2.0) - frameSize;
+     vec2 cc = (paddedCoords - vec2(0.5));
+     float dist = dot(cc, cc) * screenCurvature;
+-    return (paddedCoords + cc * (1.0 + dist) * dist);
++    return (paddedCoords + cc * (1.0 + dist) * dist * aspectScale);
+ }
+ 
+ void main() {
+@@ -263,7 +265,8 @@ uniform vec2 jitterDisplacement;
+ uniform float jitter;
+ uniform float flickering;
+ uniform vec2 scaleNoiseSize;
+-uniform float frameSize;
++uniform vec2 frameSize;    // bezel per axis, in uv units (same pixels on all sides)
++uniform vec2 aspectScale;  // bulge per axis: the same displacement in pixels on every edge
+ uniform float bloom;
+ uniform float frameOn;
+ uniform float tintOn;
+@@ -272,7 +275,7 @@ vec2 distortCoordinates(vec2 coords) {
+     vec2 paddedCoords = coords * (vec2(1.0) + frameSize * 2.0) - frameSize;
+     vec2 cc = (paddedCoords - vec2(0.5));
+     float dist = dot(cc, cc) * screenCurvature;
+-    return (paddedCoords + cc * (1.0 + dist) * dist);
++    return (paddedCoords + cc * (1.0 + dist) * dist * aspectScale);
+ }
+ 
+ vec3 applyRasterization(vec2 screenCoords, vec3 texel, vec2 virtualRes, float intensity) {
