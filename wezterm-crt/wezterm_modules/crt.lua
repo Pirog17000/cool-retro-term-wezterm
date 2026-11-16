@@ -11,6 +11,7 @@
 local wezterm = require 'wezterm'
 local act = wezterm.action
 local data = require 'crt_data'
+local options = require 'options' -- every other wezterm option, see options.lua
 
 local M = {}
 M.fonts = data.fonts
@@ -388,7 +389,8 @@ menu = function(window, pane)
     { id = 'font', label = 'Font ........... ' .. (font and font.name or '?') },
     { id = 'effects', label = 'CRT effects .... tune bloom, noise, curvature ...' },
     { id = 'toggle', label = 'CRT effects .... ' .. (eff.enabled and 'ON  (turn off)' or 'OFF (turn on)') },
-    { id = 'reset', label = 'Reset .......... back to wezterm.lua defaults' },
+    { id = 'options', label = 'All options .... every wezterm setting (' .. options.count() .. '), by category' },
+    { id = 'reset', label = 'Reset CRT ...... profile, font and effects back to wezterm.lua' },
     { id = 'fullscreen', label = 'Full screen .... F11 / Alt+Enter' },
     { id = 'edit', label = 'Edit wezterm.lua (every wezterm option)' },
     { id = 'reload', label = 'Reload configuration' },
@@ -404,6 +406,8 @@ menu = function(window, pane)
     elseif id == 'toggle' then
       update_state(function(s) s.enabled = not eff.enabled end)
       menu(w, p2)
+    elseif id == 'options' then
+      options.menu(w, p2, menu)
     elseif id == 'reset' then
       M.save_state {}
       menu(w, p2)
@@ -421,8 +425,8 @@ end
 
 M.open_menu = function(window, pane) menu(window, pane) end
 
---- Register the settings menu: gear button in the title bar and
---- Ctrl+Shift+, as a keyboard shortcut.
+--- Register the settings menu (gear button in the title bar and
+--- Ctrl+Shift+, as a keyboard shortcut) and apply the options saved in it.
 function M.setup(config)
   wezterm.on('settings-button-click', function(window, pane)
     M.open_menu(window, pane)
@@ -433,6 +437,9 @@ function M.setup(config)
   end)
   config.keys = config.keys or {}
   table.insert(config.keys, { key = ',', mods = 'CTRL|SHIFT', action = act.EmitEvent 'crt-open-settings' })
+  -- Options changed in Settings > All options (wezterm_options.json) win over
+  -- what wezterm.lua set before this call.
+  options.apply(config)
   return config
 end
 

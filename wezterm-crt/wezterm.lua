@@ -66,6 +66,9 @@ end
 crt.apply(config, {
   profile = 'Default Amber',
 })
+-- Settings menu + "All options" (every wezterm setting, saved in
+-- wezterm_options.json next to the exe).  Those values win over everything
+-- above; settings placed after this line win over the menu.
 crt.setup(config)
 
 return config
