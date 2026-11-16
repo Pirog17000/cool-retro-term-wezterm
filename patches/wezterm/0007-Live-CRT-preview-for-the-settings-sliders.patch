@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: cool-retro-term-wezterm <build@localhost>
 Date: Mon, 16 Nov 2026 20:38:32 +0100
-Subject: [PATCH 7/7] Live CRT preview for the settings sliders
+Subject: [PATCH 7/8] Live CRT preview for the settings sliders
 
 A configuration reload takes a few hundred milliseconds (every assignment
 to a config_builder builds and converts a whole Config), too slow for a

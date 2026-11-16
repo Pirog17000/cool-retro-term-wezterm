@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: cool-retro-term-wezterm <build@localhost>
 Date: Mon, 16 Nov 2026 16:46:54 +0100
-Subject: [PATCH 3/7] Settings (gear) button for the integrated title bar
+Subject: [PATCH 3/8] Settings (gear) button for the integrated title bar
 
 - IntegratedTitleButton::Settings with a gear icon (Windows/Gnome styles)
   and a ' * ' text form for the retro tab bar (tab_bar_style.window_settings)

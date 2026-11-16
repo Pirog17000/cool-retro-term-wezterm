@@ -1,0 +1,208 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: cool-retro-term-wezterm <build@localhost>
+Date: Mon, 16 Nov 2026 20:45:50 +0100
+Subject: [PATCH 8/8] CRT: frame size 0 means no bezel
+
+Most of the bezel in the middle of an edge is the margin the bulge leaves
+around the picture; the frame size only adds a few pixels.  Below a frame
+size of 0.1 that margin now shrinks too, down to none at 0: the screen then
+reaches the window edges in the middle of every side and only the corners
+curve away.  From 0.1 up (every curved profile) nothing changes.  The
+shaders take a per axis scale before the bulge instead of the frame size,
+and the pointer reflection's height is limited by the real bezel width.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ wezterm-gui/src/crt/mod.rs       | 63 ++++++++++++++++++++++++++------
+ wezterm-gui/src/crt/shaders.glsl | 12 +++---
+ 2 files changed, 58 insertions(+), 17 deletions(-)
+
+diff --git a/wezterm-gui/src/crt/mod.rs b/wezterm-gui/src/crt/mod.rs
+index b7397d4..a670cf3 100644
+--- a/wezterm-gui/src/crt/mod.rs
++++ b/wezterm-gui/src/crt/mod.rs
+@@ -134,14 +134,42 @@ impl ScreenRect {
+ /// moves every edge by the same number of pixels: the displacement is scaled
+ /// per axis so that it is measured against the mean of width and height.  A
+ /// square window looks exactly as in cool-retro-term.
++///
++/// The bezel in the middle of an edge is mostly the margin the bulge leaves
++/// (the frame size adds a few pixels on top).  So that a frame size of 0
++/// really means no bezel, below FRAME_SIZE_FULL that margin shrinks too:
++/// at 0 the screen reaches the window edges in the middle of every side and
++/// only the corners curve away.  From FRAME_SIZE_FULL up (every curved
++/// profile) the bezel is cool-retro-term's.
+ struct Geometry {
+     curvature: f32,
+-    /// bezel width per axis, in 0..1 units
+-    frame: [f32; 2],
++    /// per axis scale of the window coordinates around the centre before
++    /// the bulge: `(tc - 0.5) * scale + 0.5`
++    scale: [f32; 2],
++    /// bezel in the middle of the edges, in pixels, per axis
++    bezel_px: [f32; 2],
+     /// per axis factor for the curvature displacement
+     aspect: [f32; 2],
+ }
+ 
++const FRAME_SIZE_FULL: f32 = 0.1;
++
++/// How far from the centre, in padded units, the bulge reaches the edge of
++/// the content in the middle of an edge: solves c + a k c^3 (1 + k c^2) = 0.5.
++fn edge_reach(k: f32, a: f32) -> f32 {
++    let (mut lo, mut hi) = (0.0f32, 0.5f32);
++    for _ in 0..40 {
++        let c = 0.5 * (lo + hi);
++        let d = k * c * c;
++        if c + c * (1.0 + d) * d * a < 0.5 {
++            lo = c;
++        } else {
++            hi = c;
++        }
++    }
++    0.5 * (lo + hi)
++}
++
+ fn geometry(p: &CrtParams, w: f32, h: f32) -> Geometry {
+     let (w, h) = (w.max(1.0), h.max(1.0));
+     let normalized_window_scale = 1024.0 / (0.5 * w + 0.5 * h);
+@@ -149,10 +177,23 @@ fn geometry(p: &CrtParams, w: f32, h: f32) -> Geometry {
+     // what a square window of the same mean size gets, in pixels
+     let frame_px = p.frame_size * 0.05 * normalized_window_scale * 0.5 * (w + h);
+     let mean = 0.5 * (w + h);
++    let aspect = [mean / w, mean / h];
++    let keep = (p.frame_size / FRAME_SIZE_FULL).clamp(0.0, 1.0);
++    let mut scale = [1.0f32; 2];
++    let mut bezel_px = [0.0f32; 2];
++    for (i, dim) in [w, h].into_iter().enumerate() {
++        // cool-retro-term pads by the frame (scale 1 + 2f), then bulges
++        let padded = 1.0 + 2.0 * frame_px / dim;
++        let reach = edge_reach(curvature, aspect[i]);
++        let bezel = ((0.5 - reach / padded).max(0.0) * keep).min(0.45);
++        scale[i] = reach / (0.5 - bezel);
++        bezel_px[i] = bezel * dim;
++    }
+     Geometry {
+         curvature,
+-        frame: [frame_px / w, frame_px / h],
+-        aspect: [mean / w, mean / h],
++        scale,
++        bezel_px,
++        aspect,
+     }
+ }
+ 
+@@ -161,8 +202,8 @@ fn geometry(p: &CrtParams, w: f32, h: f32) -> Geometry {
+ /// logical position.  Used to map mouse positions onto the curved screen.
+ pub fn distort_point(p: &CrtParams, rect: &ScreenRect, tc: (f32, f32)) -> (f32, f32) {
+     let g = geometry(p, rect.w, rect.h);
+-    let px = tc.0 * (1.0 + g.frame[0] * 2.0) - g.frame[0];
+-    let py = tc.1 * (1.0 + g.frame[1] * 2.0) - g.frame[1];
++    let px = (tc.0 - 0.5) * g.scale[0] + 0.5;
++    let py = (tc.1 - 0.5) * g.scale[1] + 0.5;
+     let (cx, cy) = (px - 0.5, py - 0.5);
+     let dist = (cx * cx + cy * cy) * g.curvature;
+     (
+@@ -363,7 +404,7 @@ impl CrtRenderer {
+ 
+         // ---- derived values (mirrors cool-retro-term's QML bindings) -----
+         let g = geometry(p, wf, hf);
+-        let (screen_curvature, frame_size, aspect_scale) = (g.curvature, g.frame, g.aspect);
++        let (screen_curvature, screen_scale, aspect_scale) = (g.curvature, g.scale, g.aspect);
+         let frame_shininess = p.frame_shininess * 0.5;
+         let screen_radius = lint(4.0, 120.0, p.screen_radius);
+         let bloom = if p.bloom > 0. { p.bloom * 2.5 } else { 0. };
+@@ -416,7 +457,7 @@ impl CrtRenderer {
+         let pointer_squeeze = 0.1 + 0.35 * p.screen_curvature;
+         // the pointer's height above the glass: the gap between it and its
+         // image in the bezel (never so much that the image leaves the bezel)
+-        let pointer_lift = (pointer_size * 0.2).min(frame_size[0] * wf * 0.5);
++        let pointer_lift = (pointer_size * 0.2).min(g.bezel_px[0] * 0.5);
+         // the bezel mirror is rounded at the corners, so that a pointer near
+         // a corner gives one image wrapped around it
+         let pointer_corner = (pointer_size * 1.5).max(screen_radius);
+@@ -461,7 +502,7 @@ impl CrtRenderer {
+             let u = glium::uniform! {
+                 screenCurvature: screen_curvature,
+                 frameColor: frame_color,
+-                frameSize: frame_size,
++                screenScale: screen_scale,
+                 aspectScale: aspect_scale,
+                 screenRadius: screen_radius,
+                 viewportSize: [wf, hf],
+@@ -479,7 +520,7 @@ impl CrtRenderer {
+                 screenCurvature: screen_curvature,
+                 rgbShift: rgb_shift,
+                 frameShininess: frame_shininess,
+-                frameSize: frame_size,
++                screenScale: screen_scale,
+                 aspectScale: aspect_scale,
+                 screen_brightness: screen_brightness,
+                 viewportSize: viewport_size,
+@@ -535,7 +576,7 @@ impl CrtRenderer {
+             u.add("horizontalSync", &p.horizontal_sync);
+             u.add("horizontalSyncStrength", &horizontal_sync_strength);
+             u.add("scaleNoiseSize", &scale_noise_size);
+-            u.add("frameSize", &frame_size);
++            u.add("screenScale", &screen_scale);
+             u.add("aspectScale", &aspect_scale);
+             u.add("bloom", &bloom);
+             u.add("frameOn", &frame_on_f);
+diff --git a/wezterm-gui/src/crt/shaders.glsl b/wezterm-gui/src/crt/shaders.glsl
+index 7636691..095a789 100644
+--- a/wezterm-gui/src/crt/shaders.glsl
++++ b/wezterm-gui/src/crt/shaders.glsl
+@@ -114,7 +114,7 @@ in vec2 tc;
+ out vec4 color;
+ uniform float screenCurvature;
+ uniform vec3 frameColor;
+-uniform vec2 frameSize;    // bezel per axis, in uv units (same pixels on all sides)
++uniform vec2 screenScale;  // per axis scale around the centre before the bulge (sets the bezel)
+ uniform vec2 aspectScale;  // bulge per axis: the same displacement in pixels on every edge
+ uniform float screenRadius;
+ uniform vec2 viewportSize;
+@@ -122,7 +122,7 @@ uniform float ambientLight;
+ uniform float frameShininess;
+ 
+ vec2 distortCoordinates(vec2 coords) {
+-    vec2 paddedCoords = coords * (vec2(1.0) + frameSize * 2.0) - frameSize;
++    vec2 paddedCoords = (coords - vec2(0.5)) * screenScale + vec2(0.5);
+     vec2 cc = (paddedCoords - vec2(0.5));
+     float dist = dot(cc, cc) * screenCurvature;
+     return (paddedCoords + cc * (1.0 + dist) * dist * aspectScale);
+@@ -179,7 +179,7 @@ uniform sampler2D bloomSource;
+ uniform float screenCurvature;
+ uniform float rgbShift;
+ uniform float frameShininess;
+-uniform vec2 frameSize;    // bezel per axis, in uv units (same pixels on all sides)
++uniform vec2 screenScale;  // per axis scale around the centre before the bulge (sets the bezel)
+ uniform vec2 aspectScale;  // bulge per axis: the same displacement in pixels on every edge
+ uniform float screen_brightness;
+ uniform float bloom;
+@@ -194,7 +194,7 @@ uniform float pointerLift;   // height of the pointer above the glass, in pixels
+ uniform float pointerCorner; // corner radius of the bezel mirror, in pixels
+ 
+ vec2 distortCoordinates(vec2 coords) {
+-    vec2 paddedCoords = coords * (vec2(1.0) + frameSize * 2.0) - frameSize;
++    vec2 paddedCoords = (coords - vec2(0.5)) * screenScale + vec2(0.5);
+     vec2 cc = (paddedCoords - vec2(0.5));
+     float dist = dot(cc, cc) * screenCurvature;
+     return (paddedCoords + cc * (1.0 + dist) * dist * aspectScale);
+@@ -349,7 +349,7 @@ uniform vec2 jitterDisplacement;
+ uniform float jitter;
+ uniform float flickering;
+ uniform vec2 scaleNoiseSize;
+-uniform vec2 frameSize;    // bezel per axis, in uv units (same pixels on all sides)
++uniform vec2 screenScale;  // per axis scale around the centre before the bulge (sets the bezel)
+ uniform vec2 aspectScale;  // bulge per axis: the same displacement in pixels on every edge
+ uniform float bloom;
+ uniform float frameOn;
+@@ -364,7 +364,7 @@ uniform float pointerBend;   // how much the image bends around the bulge
+ uniform float pointerSqueeze; // how much it is squeezed along the radius
+ 
+ vec2 distortCoordinates(vec2 coords) {
+-    vec2 paddedCoords = coords * (vec2(1.0) + frameSize * 2.0) - frameSize;
++    vec2 paddedCoords = (coords - vec2(0.5)) * screenScale + vec2(0.5);
+     vec2 cc = (paddedCoords - vec2(0.5));
+     float dist = dot(cc, cc) * screenCurvature;
+     return (paddedCoords + cc * (1.0 + dist) * dist * aspectScale);
