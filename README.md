@@ -11,6 +11,15 @@ and cool-retro-term's CRT effects are ported into wezterm's OpenGL renderer.
 Every wezterm feature works (multiplexer, splits, SSH/WSL domains, ligatures,
 images, key tables, Lua config, ...) with the cool-retro-term look on top.
 
+![Deep Blue profile: ANSI and truecolor output on the curved screen](docs/screenshots/hero.jpg)
+
+![Default Amber, Deep Blue, Monochrome Green, IBM VGA 8x16, Plasma and IBM 3278 Reborn](docs/screenshots/profiles.jpg)
+
+*Profiles: Default Amber, Deep Blue, Monochrome Green, IBM VGA 8x16, Plasma,
+IBM 3278 Reborn.  Profiles with chroma show the program's colors (16 ANSI
+colors and 24-bit truecolor); the monochrome ones tint everything in the
+phosphor color, like the real tubes.*
+
 - `patches/wezterm/*.patch` — our changes to wezterm (applied onto the pinned
   upstream commit in `third_party/wezterm`, local branch `crt`):
   - `config.crt`: cool-retro-term profile + overrides for every effect
