@@ -26,6 +26,14 @@ import QtQuick.Dialogs
 
 ApplicationWindow {
     readonly property real tabButtonPadding: 10
+    readonly property int wezTermTabIndex: 4
+
+    function showTab(index) {
+        bar.currentIndex = index
+        show()
+        requestActivate()
+        raise()
+    }
 
     id: settings_window
     title: qsTr("Settings")
@@ -54,6 +62,10 @@ ApplicationWindow {
                 padding: tabButtonPadding
                 text: qsTr("Advanced")
             }
+            TabButton {
+                padding: tabButtonPadding
+                text: qsTr("WezTerm")
+            }
         }
 
         StackLayout {
@@ -71,6 +83,7 @@ ApplicationWindow {
             SettingsTerminalTab { }
             SettingsEffectsTab { }
             SettingsAdvancedTab { }
+            SettingsWezTermTab { }
         }
     }
 }

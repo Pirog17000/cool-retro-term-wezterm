@@ -22,6 +22,7 @@
 
 // Own
 #include "ksession.h"
+#include "WezTermConfig.h"
 #include "TerminalDisplay.h"
 
 // Qt
@@ -109,7 +110,7 @@ Konsole::Session *KSession::createSession(QString name)
     session->setAutoClose(true);
 
     session->setFlowControlEnabled(true);
-    session->setHistoryType(HistoryTypeBuffer(10000));
+    session->setHistoryType(HistoryTypeBuffer(Konsole::WezTermConfig::instance()->scrollbackLines()));
 
     session->setDarkBackground(true);
 

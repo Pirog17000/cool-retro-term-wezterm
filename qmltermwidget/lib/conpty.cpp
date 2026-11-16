@@ -20,6 +20,8 @@
 #include <QDir>
 #include <QFileInfo>
 
+#include "WezTermConfig.h"
+
 namespace {
 
 // ConPTY entry points.  Like wezterm, prefer a side-loaded conpty.dll (+
@@ -51,32 +53,48 @@ bool loadFrom(HMODULE mod, ConPtyApi& api)
     return api.create && api.resize && api.close;
 }
 
-const ConPtyApi& conptyApi()
+ConPtyApi loadInbox()
 {
-    static const ConPtyApi api = [] {
-        ConPtyApi a;
-        const bool forceInbox = qEnvironmentVariableIntValue("CRT_CONPTY_INBOX") != 0;
-        const QString dir = QCoreApplication::applicationDirPath();
-        const QString dll = QDir::toNativeSeparators(dir + QStringLiteral("/conpty.dll"));
-        const bool haveHost = QFileInfo::exists(dir + QStringLiteral("/OpenConsole.exe"));
-        if (!forceInbox && haveHost && QFileInfo::exists(dll)) {
-            HMODULE mod = LoadLibraryExW(reinterpret_cast<LPCWSTR>(dll.utf16()), nullptr,
-                                         LOAD_WITH_ALTERED_SEARCH_PATH);
-            if (loadFrom(mod, a)) {
-                a.sideloaded = true;
-                a.flags = kPseudoconsoleResizeQuirk;
-                if (qEnvironmentVariableIntValue("CRT_CONPTY_PASSTHROUGH") != 0)
-                    a.flags |= kPseudoconsolePassthroughMode;
-                qDebug() << "ConPty: using side-loaded conpty.dll from" << dir;
-                return a;
-            }
-            a = ConPtyApi();
-        }
-        if (!loadFrom(GetModuleHandleW(L"kernel32.dll"), a))
-            qWarning() << "ConPty: this system does not support ConPTY";
+    ConPtyApi a;
+    if (!loadFrom(GetModuleHandleW(L"kernel32.dll"), a))
+        qWarning() << "ConPty: this system does not support ConPTY";
+    return a;
+}
+
+ConPtyApi loadSideloaded()
+{
+    ConPtyApi a;
+    const QString dir = QCoreApplication::applicationDirPath();
+    const QString dll = QDir::toNativeSeparators(dir + QStringLiteral("/conpty.dll"));
+    if (!QFileInfo::exists(dir + QStringLiteral("/OpenConsole.exe")) || !QFileInfo::exists(dll))
         return a;
-    }();
-    return api;
+    HMODULE mod = LoadLibraryExW(reinterpret_cast<LPCWSTR>(dll.utf16()), nullptr,
+                                 LOAD_WITH_ALTERED_SEARCH_PATH);
+    if (!loadFrom(mod, a))
+        return ConPtyApi();
+    a.sideloaded = true;
+    a.flags = kPseudoconsoleResizeQuirk;
+    return a;
+}
+
+// Picks the ConPTY implementation for a new pseudoconsole according to
+// WezTermConfig (env CRT_CONPTY_INBOX / CRT_CONPTY_PASSTHROUGH override).
+ConPtyApi conptyApiForNewConsole()
+{
+    static const ConPtyApi inbox = loadInbox();
+    static const ConPtyApi sideloaded = loadSideloaded();
+
+    const Konsole::WezTermConfig* config = Konsole::WezTermConfig::instance();
+    const bool wantSideload = config->sideloadConpty()
+                              && qEnvironmentVariableIntValue("CRT_CONPTY_INBOX") == 0;
+    if (wantSideload && sideloaded.create) {
+        ConPtyApi a = sideloaded;
+        if (config->conptyPassthrough() || qEnvironmentVariableIntValue("CRT_CONPTY_PASSTHROUGH") != 0)
+            a.flags |= kPseudoconsolePassthroughMode;
+        qDebug() << "ConPty: using side-loaded conpty.dll, flags" << a.flags;
+        return a;
+    }
+    return inbox;
 }
 
 } // namespace
@@ -126,7 +144,9 @@ bool ConPty::create(int cols, int rows)
     size.X = static_cast<SHORT>(cols);
     size.Y = static_cast<SHORT>(rows);
 
-    const ConPtyApi& api = conptyApi();
+    const ConPtyApi api = conptyApiForNewConsole();
+    m_close = reinterpret_cast<void*>(api.close);
+    m_resize = reinterpret_cast<void*>(api.resize);
     HRESULT hr = api.create ? api.create(size, hPipeInRead, hPipeOutWrite, api.flags, &m_hPC)
                             : E_NOTIMPL;
 
@@ -154,8 +174,8 @@ bool ConPty::create(int cols, int rows)
 void ConPty::close()
 {
     if (m_hPC != INVALID_HANDLE_VALUE) {
-        if (conptyApi().close)
-            conptyApi().close(m_hPC);
+        if (m_close)
+            reinterpret_cast<PFN_ClosePseudoConsole>(m_close)(m_hPC);
         m_hPC = INVALID_HANDLE_VALUE;
     }
 
@@ -191,7 +211,8 @@ bool ConPty::resize(int rows, int cols)
     size.X = static_cast<SHORT>(cols);
     size.Y = static_cast<SHORT>(rows);
 
-    HRESULT hr = conptyApi().resize ? conptyApi().resize(m_hPC, size) : E_NOTIMPL;
+    HRESULT hr = m_resize ? reinterpret_cast<PFN_ResizePseudoConsole>(m_resize)(m_hPC, size)
+                          : E_NOTIMPL;
     if (FAILED(hr)) {
         qWarning() << "ConPty::resize() - ResizePseudoConsole failed, hr:" << Qt::hex << hr;
         return false;

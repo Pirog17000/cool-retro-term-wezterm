@@ -26,6 +26,7 @@ set(QMLTERMWIDGET_SOURCES
     lib/tools.cpp
     lib/Vt102Emulation.cpp
     lib/WezEmulation.cpp
+    lib/WezTermConfig.cpp
     lib/ksession.cpp
     lib/kprocess.cpp
     src/qmltermwidget_plugin.cpp
@@ -57,6 +58,7 @@ set(QMLTERMWIDGET_HEADERS
     lib/tools.h
     lib/Vt102Emulation.h
     lib/WezEmulation.h
+    lib/WezTermConfig.h
     lib/mac-vkcode.h
     lib/ksession.h
     lib/ringbuffer.h

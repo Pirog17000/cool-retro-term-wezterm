@@ -22,6 +22,8 @@
 #include <QVector>
 #include <QString>
 
+#include <atomic>
+
 #include "Emulation.h"
 #include "Character.h"
 
@@ -59,7 +61,11 @@ protected:
     void resetMode(int mode) override;
     void prepareBulkUpdate() override;
 
+private slots:
+    void applyConfig();
+
 private:
+    static void outputReadyThunk(void* user);
     void flushOutput();
     void syncFromModel();
     void syncScrollbackLimit();
@@ -67,6 +73,7 @@ private:
     Character convertCell(const WtCell& cell) const;
 
     WtTerminal* _term = nullptr;
+    std::atomic<bool> _flushQueued{false};
     QVector<WtCell>* _cellBuf = nullptr;
 
     qint64 _histNextStable = 0;     // first stable row not yet copied into Konsole history

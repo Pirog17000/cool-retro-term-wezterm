@@ -47,6 +47,7 @@
 #include "ShellCommand.h"
 #include "Vt102Emulation.h"
 #include "WezEmulation.h"
+#include "WezTermConfig.h"
 
 // QMLTermWidget
 #include <QQuickWindow>
@@ -96,7 +97,8 @@ Session::Session(QObject* parent) :
     //create emulation backend
     // Terminal emulation core: wezterm-term (via wezbridge) by default.
     // Set CRT_EMULATION=konsole to fall back to the legacy Konsole Vt102 emulation.
-    if (qEnvironmentVariable("CRT_EMULATION").compare(QLatin1String("konsole"), Qt::CaseInsensitive) == 0) {
+    if (qEnvironmentVariable("CRT_EMULATION").compare(QLatin1String("konsole"), Qt::CaseInsensitive) == 0
+        || !WezTermConfig::instance()->useWeztermCore()) {
         _emulation = new Vt102Emulation();
     } else {
         auto *wez = new WezEmulation();

@@ -17,6 +17,7 @@
 #include "History.h"
 #include "KeyboardTranslator.h"
 #include "Screen.h"
+#include "WezTermConfig.h"
 
 #include "wezbridge.h"
 
@@ -25,6 +26,24 @@ using namespace Konsole;
 namespace
 {
 constexpr int kUnlimitedScrollback = 100000;
+
+bool traceEnabled()
+{
+    static const bool on = qEnvironmentVariableIntValue("CRT_WEZ_TRACE") != 0;
+    return on;
+}
+
+QString escaped(const char* data, int len)
+{
+    QString out;
+    for (int i = 0; i < len; ++i) {
+        const unsigned char c = static_cast<unsigned char>(data[i]);
+        if (c == 0x1b) out += QLatin1String("\\e");
+        else if (c < 0x20 || c == 0x7f) out += QStringLiteral("\\x%1").arg(c, 2, 16, QLatin1Char('0'));
+        else out += QLatin1Char(static_cast<char>(c));
+    }
+    return out;
+}
 
 int specialKeyFor(int qtKey)
 {
@@ -134,18 +153,57 @@ WezEmulation::WezEmulation()
 #else
     const uint8_t conptyQuirks = 0;
 #endif
-    _term = wt_new(lines, columns, 10000, conptyQuirks);
-    _scrollbackLimit = 10000;
+    WtConfig cfg;
+    WezTermConfig::instance()->toWtConfig(&cfg);
+    _term = wt_new(lines, columns, &cfg, conptyQuirks);
+    _scrollbackLimit = static_cast<int>(cfg.scrollback);
     _cellBuf = new QVector<WtCell>(columns);
-    if (!_term)
+    if (!_term) {
         qWarning() << "WezEmulation: failed to create wezterm terminal model";
+        return;
+    }
+    wt_set_output_callback(_term, &WezEmulation::outputReadyThunk, this);
+    connect(WezTermConfig::instance(), &WezTermConfig::configChanged,
+            this, &WezEmulation::applyConfig);
 }
 
 WezEmulation::~WezEmulation()
 {
-    if (_term)
+    if (_term) {
+        // After this returns wezterm's writer thread can no longer call us.
+        wt_set_output_callback(_term, nullptr, nullptr);
         wt_free(_term);
+    }
     delete _cellBuf;
+}
+
+void WezEmulation::outputReadyThunk(void* user)
+{
+    // Runs on wezterm's writer thread: hop to the GUI thread.
+    auto* self = static_cast<WezEmulation*>(user);
+    if (self->_flushQueued.exchange(true))
+        return;
+    QMetaObject::invokeMethod(self, [self] {
+        self->_flushQueued = false;
+        self->flushOutput();
+    }, Qt::QueuedConnection);
+}
+
+void WezEmulation::applyConfig()
+{
+    if (!_term)
+        return;
+    WezTermConfig* config = WezTermConfig::instance();
+    WtConfig cfg;
+    config->toWtConfig(&cfg);
+    wt_set_config(_term, &cfg);
+
+    // Scrollback lives in Konsole's history too; resize it and rebuild.
+    const int lines = qMax(0, config->scrollbackLines());
+    if (lines != _screen[0]->getScroll().maximumLineCount()) {
+        _needHistoryRebuild = true;
+        setHistory(HistoryTypeBuffer(lines));
+    }
 }
 
 void WezEmulation::flushOutput()
@@ -157,6 +215,8 @@ void WezEmulation::flushOutput()
         const size_t n = wt_take_output(_term, reinterpret_cast<uint8_t*>(buf), sizeof(buf));
         if (n == 0)
             break;
+        if (traceEnabled())
+            qDebug().noquote() << "WEZ send" << escaped(buf, static_cast<int>(n));
         emit sendData(buf, static_cast<int>(n));
     }
 }
@@ -167,6 +227,8 @@ void WezEmulation::receiveData(const char* buffer, int len)
         return;
 
     emit stateSet(NOTIFYACTIVITY);
+    if (traceEnabled())
+        qDebug().noquote() << "WEZ recv" << len << escaped(buffer, len);
 
     wt_advance(_term, reinterpret_cast<const uint8_t*>(buffer), static_cast<size_t>(len));
 
@@ -340,6 +402,14 @@ void WezEmulation::syncFromModel()
         screen->setExternalLine(y, line, wrapped);
     }
 
+    if (traceEnabled()) {
+        bool w = false;
+        const QVector<Character> cl = readLine(firstVisiblePhys + info.cursor_y, &w);
+        QString txt;
+        for (const Character& c : cl) txt += c.character ? QChar(static_cast<ushort>(c.character)) : QChar(u' ');
+        qDebug().noquote() << "WEZ sync cursor" << info.cursor_x << info.cursor_y << "line:" << txt.trimmed();
+    }
+
     // --- cursor / modes --------------------------------------------------
     screen->setExternalCursor(static_cast<int>(info.cursor_x), static_cast<int>(info.cursor_y));
     if (info.cursor_visible)
@@ -414,6 +484,8 @@ void WezEmulation::sendKeyEvent(QKeyEvent* ev, bool fromPaste)
     }
 
     const QString text = ev->text();
+    if (traceEnabled())
+        qDebug().noquote() << "WEZ key" << key << "text" << text.toUtf8().toHex() << "mods" << int(qmods);
     const bool ctrl = qmods & Qt::ControlModifier;
     const bool alt = qmods & Qt::AltModifier;
     // AltGr on Windows arrives as Ctrl+Alt with the composed character as text.

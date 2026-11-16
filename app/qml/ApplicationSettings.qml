@@ -20,6 +20,7 @@
 import QtQuick 2.2
 import QtQuick.Controls 2.0
 import CoolRetroTerm 1.0
+import QMLTermWidget 2.0
 
 import "utils.js" as Utils
 
@@ -168,9 +169,35 @@ QtObject {
             "bloomQuality": bloomQuality,
             "burnInQuality": burnInQuality,
             "useCustomCommand": useCustomCommand,
-            "customCommand": customCommand
+            "customCommand": customCommand,
+            "wezterm": composeWezTermObject()
         }
         return stringify(settings)
+    }
+
+    // WEZTERM CORE SETTINGS (persisted with the general settings) //////////
+    readonly property var wezTermKeys: [
+        "useWeztermCore", "sideloadConpty", "conptyPassthrough", "scrollbackLines",
+        "csiUKeys", "kittyKeyboard", "unicodeVersion", "ambiguousWide",
+        "pasteNewlines", "normalizeNfc", "bidiEnabled", "bidiHint",
+        "titleReporting", "answerback"
+    ]
+
+    function composeWezTermObject() {
+        var obj = {}
+        for (var i = 0; i < wezTermKeys.length; i++)
+            obj[wezTermKeys[i]] = WezTermConfig[wezTermKeys[i]]
+        return obj
+    }
+
+    function loadWezTermObject(obj) {
+        if (!obj)
+            return
+        for (var i = 0; i < wezTermKeys.length; i++) {
+            var key = wezTermKeys[i]
+            if (obj[key] !== undefined)
+                WezTermConfig[key] = obj[key]
+        }
     }
 
     function composeProfileObject() {
@@ -261,6 +288,8 @@ QtObject {
                 !== undefined ? settings.useCustomCommand : useCustomCommand
         customCommand = settings.customCommand
                 !== undefined ? settings.customCommand : customCommand
+
+        loadWezTermObject(settings.wezterm)
     }
 
     function loadProfileString(profileString) {

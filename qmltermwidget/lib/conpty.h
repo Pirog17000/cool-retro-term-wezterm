@@ -99,6 +99,8 @@ private:
     HANDLE m_pipeInChild;  // read end given to child process
     HANDLE m_pipeOutChild; // write end given to child process
     QSize m_size;
+    void* m_close = nullptr;  // ClosePseudoConsole of the implementation that created m_hPC
+    void* m_resize = nullptr; // ResizePseudoConsole of the same implementation
 };
 
 #endif // Q_OS_WIN

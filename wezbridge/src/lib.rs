@@ -5,6 +5,7 @@
 //! is wrapped in `catch_unwind` so a panic inside the model can never unwind
 //! across the FFI boundary into Qt.
 
+use std::ffi::c_void;
 use std::io::Write;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -12,11 +13,12 @@ use std::sync::{Arc, Mutex};
 
 use termwiz::color::ColorAttribute;
 use termwiz::surface::{CursorShape, CursorVisibility};
+use wezterm_bidi::ParagraphDirectionHint;
 use wezterm_term::color::ColorPalette;
+use wezterm_term::config::{BidiMode, NewlineCanon};
 use wezterm_term::{
-    Alert, AlertHandler, Blink, Intensity, KeyCode, KeyModifiers,
-    MouseButton, MouseEvent, MouseEventKind, Terminal, TerminalConfiguration, TerminalSize,
-    Underline,
+    Alert, AlertHandler, Blink, Intensity, KeyCode, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind, Terminal, TerminalConfiguration, TerminalSize, Underline, UnicodeVersion,
 };
 
 // ---------------------------------------------------------------------------
@@ -58,6 +60,42 @@ pub struct WtInfo {
     _pad: [u8; 2],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WtConfig {
+    scrollback: u32,
+    csi_u_keys: u8,
+    kitty_keyboard: u8,
+    unicode_version: u8,
+    ambiguous_wide: u8,
+    paste_newlines: u8,
+    normalize_nfc: u8,
+    bidi_enabled: u8,
+    bidi_hint: u8,
+    title_reporting: u8,
+    _pad: [u8; 3],
+    answerback: [u8; 64],
+}
+
+impl Default for WtConfig {
+    fn default() -> Self {
+        Self {
+            scrollback: 10000,
+            csi_u_keys: 0,
+            kitty_keyboard: 0,
+            unicode_version: 9,
+            ambiguous_wide: 0,
+            paste_newlines: 0,
+            normalize_nfc: 0,
+            bidi_enabled: 0,
+            bidi_hint: 0,
+            title_reporting: 0,
+            _pad: [0; 3],
+            answerback: [0; 64],
+        }
+    }
+}
+
 const WT_COLOR_DEFAULT: u8 = 0;
 const WT_COLOR_PALETTE: u8 = 1;
 const WT_COLOR_RGB: u8 = 2;
@@ -78,33 +116,131 @@ const WT_MOD_CTRL: u32 = 1 << 2;
 const WT_MOD_SUPER: u32 = 1 << 3;
 
 // ---------------------------------------------------------------------------
-// Model plumbing
+// Configuration
 
 #[derive(Debug)]
 struct Config {
     scrollback: usize,
+    csi_u_keys: bool,
+    kitty_keyboard: bool,
+    unicode_version: u8,
+    ambiguous_wide: bool,
+    paste_newlines: Option<NewlineCanon>,
+    normalize_nfc: bool,
+    bidi: BidiMode,
+    title_reporting: bool,
+    answerback: String,
+}
+
+impl From<&WtConfig> for Config {
+    fn from(c: &WtConfig) -> Self {
+        let end = c
+            .answerback
+            .iter()
+            .position(|b| *b == 0)
+            .unwrap_or(c.answerback.len());
+        Config {
+            scrollback: c.scrollback as usize,
+            csi_u_keys: c.csi_u_keys != 0,
+            kitty_keyboard: c.kitty_keyboard != 0,
+            unicode_version: c.unicode_version.clamp(9, 16),
+            ambiguous_wide: c.ambiguous_wide != 0,
+            paste_newlines: match c.paste_newlines {
+                1 => Some(NewlineCanon::None),
+                2 => Some(NewlineCanon::LineFeed),
+                3 => Some(NewlineCanon::CarriageReturn),
+                4 => Some(NewlineCanon::CarriageReturnAndLineFeed),
+                _ => None,
+            },
+            normalize_nfc: c.normalize_nfc != 0,
+            bidi: BidiMode {
+                enabled: c.bidi_enabled != 0,
+                hint: match c.bidi_hint {
+                    1 => ParagraphDirectionHint::RightToLeft,
+                    2 => ParagraphDirectionHint::AutoLeftToRight,
+                    3 => ParagraphDirectionHint::AutoRightToLeft,
+                    _ => ParagraphDirectionHint::LeftToRight,
+                },
+            },
+            title_reporting: c.title_reporting != 0,
+            answerback: String::from_utf8_lossy(&c.answerback[..end]).into_owned(),
+        }
+    }
 }
 
 impl TerminalConfiguration for Config {
     fn scrollback_size(&self) -> usize {
         self.scrollback
     }
-
     fn color_palette(&self) -> ColorPalette {
         ColorPalette::default()
     }
+    fn enable_csi_u_key_encoding(&self) -> bool {
+        self.csi_u_keys
+    }
+    fn enable_kitty_keyboard(&self) -> bool {
+        self.kitty_keyboard
+    }
+    fn unicode_version(&self) -> UnicodeVersion {
+        UnicodeVersion {
+            version: self.unicode_version,
+            ambiguous_are_wide: self.ambiguous_wide,
+            cell_widths: None,
+        }
+    }
+    fn canonicalize_pasted_newlines(&self) -> NewlineCanon {
+        self.paste_newlines.unwrap_or_default()
+    }
+    fn normalize_output_to_unicode_nfc(&self) -> bool {
+        self.normalize_nfc
+    }
+    fn bidi_mode(&self) -> BidiMode {
+        self.bidi
+    }
+    fn enable_title_reporting(&self) -> bool {
+        self.title_reporting
+    }
+    fn enq_answerback(&self) -> String {
+        self.answerback.clone()
+    }
 }
 
-/// Collects bytes the model wants to send to the child process.
+// ---------------------------------------------------------------------------
+// Model plumbing
+
+/// Called (from wezterm's writer thread) when output for the child process
+/// is ready to be collected with wt_take_output().
+pub type WtOutputCallback = Option<extern "C" fn(user: *mut c_void)>;
+
+#[derive(Default)]
+struct Notify {
+    cb: WtOutputCallback,
+    user: usize,
+}
+
+/// wezterm-term writes through a BufWriter feeding a background thread, so
+/// data shows up here asynchronously; flush() pokes the host to collect it.
 #[derive(Clone, Default)]
-struct OutBuf(Arc<Mutex<Vec<u8>>>);
+struct OutBuf {
+    data: Arc<Mutex<Vec<u8>>>,
+    notify: Arc<Mutex<Notify>>,
+}
 
 impl Write for OutBuf {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
+        self.data.lock().unwrap().extend_from_slice(buf);
         Ok(buf.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
+        if self.data.lock().unwrap().is_empty() {
+            return Ok(());
+        }
+        // The lock is held during the call so that clearing the callback is
+        // a hard barrier for the host's teardown.
+        let n = self.notify.lock().unwrap();
+        if let Some(cb) = n.cb {
+            cb(n.user as *mut c_void);
+        }
         Ok(())
     }
 }
@@ -125,6 +261,7 @@ pub struct WtTerminal {
     term: Terminal,
     out: OutBuf,
     bells: Arc<AtomicU32>,
+    config: WtConfig,
 }
 
 fn guard<R: Default, F: FnOnce() -> R>(f: F) -> R {
@@ -136,11 +273,24 @@ unsafe fn term_mut<'a>(t: *mut WtTerminal) -> Option<&'a mut WtTerminal> {
 }
 
 // ---------------------------------------------------------------------------
-// Lifecycle
+// Lifecycle / configuration
 
 #[no_mangle]
-pub extern "C" fn wt_new(rows: u32, cols: u32, scrollback: u32, conpty_quirks: u8) -> *mut WtTerminal {
-    let r = catch_unwind(|| {
+pub extern "C" fn wt_default_config(out: *mut WtConfig) {
+    if let Some(out) = unsafe { out.as_mut() } {
+        *out = WtConfig::default();
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn wt_new(
+    rows: u32,
+    cols: u32,
+    config: *const WtConfig,
+    conpty_quirks: u8,
+) -> *mut WtTerminal {
+    let cfg = config.as_ref().copied().unwrap_or_default();
+    let r = catch_unwind(move || {
         let out = OutBuf::default();
         let bells = Arc::new(AtomicU32::new(0));
         let size = TerminalSize {
@@ -152,9 +302,7 @@ pub extern "C" fn wt_new(rows: u32, cols: u32, scrollback: u32, conpty_quirks: u
         };
         let mut term = Terminal::new(
             size,
-            Arc::new(Config {
-                scrollback: scrollback as usize,
-            }),
+            Arc::new(Config::from(&cfg)),
             "cool-retro-term",
             env!("CARGO_PKG_VERSION"),
             Box::new(out.clone()),
@@ -165,7 +313,12 @@ pub extern "C" fn wt_new(rows: u32, cols: u32, scrollback: u32, conpty_quirks: u
         term.set_notification_handler(Box::new(Alerts {
             bells: Arc::clone(&bells),
         }));
-        Box::into_raw(Box::new(WtTerminal { term, out, bells }))
+        Box::into_raw(Box::new(WtTerminal {
+            term,
+            out,
+            bells,
+            config: cfg,
+        }))
     });
     r.unwrap_or(std::ptr::null_mut())
 }
@@ -175,6 +328,41 @@ pub unsafe extern "C" fn wt_free(t: *mut WtTerminal) {
     if !t.is_null() {
         let _ = catch_unwind(AssertUnwindSafe(|| drop(Box::from_raw(t))));
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn wt_set_config(t: *mut WtTerminal, config: *const WtConfig) {
+    guard(|| {
+        if let (Some(t), Some(cfg)) = (term_mut(t), config.as_ref()) {
+            t.config = *cfg;
+            t.term.set_config(Arc::new(Config::from(&t.config)));
+        }
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn wt_set_scrollback(t: *mut WtTerminal, scrollback: u32) {
+    guard(|| {
+        if let Some(t) = term_mut(t) {
+            t.config.scrollback = scrollback;
+            t.term.set_config(Arc::new(Config::from(&t.config)));
+        }
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn wt_set_output_callback(
+    t: *mut WtTerminal,
+    cb: WtOutputCallback,
+    user: *mut c_void,
+) {
+    guard(|| {
+        if let Some(t) = term_mut(t) {
+            let mut n = t.out.notify.lock().unwrap();
+            n.cb = cb;
+            n.user = user as usize;
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -192,7 +380,11 @@ pub unsafe extern "C" fn wt_advance(t: *mut WtTerminal, data: *const u8, len: us
 
 #[no_mangle]
 pub unsafe extern "C" fn wt_output_len(t: *mut WtTerminal) -> usize {
-    guard(|| term_mut(t).map(|t| t.out.0.lock().unwrap().len()).unwrap_or(0))
+    guard(|| {
+        term_mut(t)
+            .map(|t| t.out.data.lock().unwrap().len())
+            .unwrap_or(0)
+    })
 }
 
 #[no_mangle]
@@ -202,7 +394,7 @@ pub unsafe extern "C" fn wt_take_output(t: *mut WtTerminal, buf: *mut u8, cap: u
         if buf.is_null() || cap == 0 {
             return 0;
         }
-        let mut pending = t.out.0.lock().unwrap();
+        let mut pending = t.out.data.lock().unwrap();
         let n = pending.len().min(cap);
         std::ptr::copy_nonoverlapping(pending.as_ptr(), buf, n);
         pending.drain(..n);
@@ -224,17 +416,6 @@ pub unsafe extern "C" fn wt_resize(t: *mut WtTerminal, rows: u32, cols: u32, pw:
                 pixel_height: ph as usize,
                 dpi: 96,
             });
-        }
-    })
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn wt_set_scrollback(t: *mut WtTerminal, scrollback: u32) {
-    guard(|| {
-        if let Some(t) = term_mut(t) {
-            t.term.set_config(Arc::new(Config {
-                scrollback: scrollback as usize,
-            }));
         }
     })
 }
@@ -289,7 +470,10 @@ fn encode_color(c: ColorAttribute) -> (u8, u32) {
         ColorAttribute::TrueColorWithPaletteFallback(rgb, _)
         | ColorAttribute::TrueColorWithDefaultFallback(rgb) => {
             let (r, g, b, _) = rgb.to_srgb_u8();
-            (WT_COLOR_RGB, ((r as u32) << 16) | ((g as u32) << 8) | b as u32)
+            (
+                WT_COLOR_RGB,
+                ((r as u32) << 16) | ((g as u32) << 8) | b as u32,
+            )
         }
     }
 }
@@ -376,7 +560,7 @@ pub unsafe extern "C" fn wt_line(
                     cp[0] = b' ' as u32;
                     ncp = 1;
                 }
-                let width = cell.width().max(1).min(2);
+                let width = cell.width().clamp(1, 2);
                 out[idx] = WtCell {
                     cp,
                     ncp: ncp as u8,
@@ -434,7 +618,11 @@ pub unsafe extern "C" fn wt_title(t: *mut WtTerminal, buf: *mut u8, cap: usize) 
 
 #[no_mangle]
 pub unsafe extern "C" fn wt_take_bells(t: *mut WtTerminal) -> u32 {
-    guard(|| term_mut(t).map(|t| t.bells.swap(0, Ordering::Relaxed)).unwrap_or(0))
+    guard(|| {
+        term_mut(t)
+            .map(|t| t.bells.swap(0, Ordering::Relaxed))
+            .unwrap_or(0)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -511,7 +699,14 @@ pub unsafe extern "C" fn wt_paste(t: *mut WtTerminal, utf8: *const u8, len: usiz
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn wt_mouse(t: *mut WtTerminal, kind: u8, button: u8, x: i64, y: i64, mods: u32) {
+pub unsafe extern "C" fn wt_mouse(
+    t: *mut WtTerminal,
+    kind: u8,
+    button: u8,
+    x: i64,
+    y: i64,
+    mods: u32,
+) {
     guard(|| {
         let Some(t) = term_mut(t) else { return };
         if x < 0 || y < 0 {

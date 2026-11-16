@@ -2,6 +2,7 @@
 
 #include "TerminalDisplay.h"
 #include "ksession.h"
+#include "WezTermConfig.h"
 
 #include <qqml.h>
 #include <QQmlEngine>
@@ -14,6 +15,12 @@ void QmltermwidgetPlugin::registerTypes(const char *uri)
     // @uri org.qterminal.qmlterminal
     qmlRegisterType<TerminalDisplay>(uri, 2, 0, "QMLTermWidget");
     qmlRegisterType<KSession>(uri, 2, 0, "QMLTermSession");
+    qmlRegisterSingletonType<WezTermConfig>(uri, 2, 0, "WezTermConfig",
+        [](QQmlEngine*, QJSEngine*) -> QObject* {
+            QObject* config = WezTermConfig::instance();
+            QQmlEngine::setObjectOwnership(config, QQmlEngine::CppOwnership);
+            return config;
+        });
 }
 
 void QmltermwidgetPlugin::initializeEngine(QQmlEngine *engine, const char *uri)

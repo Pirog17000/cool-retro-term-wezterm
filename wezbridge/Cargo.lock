@@ -1876,6 +1876,7 @@ name = "wezbridge"
 version = "0.1.0"
 dependencies = [
  "termwiz",
+ "wezterm-bidi",
  "wezterm-term",
 ]
 

@@ -19,6 +19,7 @@
 *******************************************************************************/
 import QtQuick 2.2
 import QtQuick.Controls 2.3
+import QMLTermWidget 2.0
 
 MenuBar {
     id: defaultMenuBar
@@ -64,6 +65,47 @@ MenuBar {
             }
             onObjectAdded: function(index, object) { profilesMenu.insertItem(index, object) }
             onObjectRemoved: function(object) { profilesMenu.removeItem(object) }
+        }
+    }
+    Menu {
+        id: wezTermMenu
+        title: qsTr("WezTerm")
+        MenuItem {
+            text: qsTr("WezTerm emulation core")
+            checkable: true
+            checked: WezTermConfig.useWeztermCore
+            onTriggered: WezTermConfig.useWeztermCore = checked
+        }
+        MenuItem {
+            text: qsTr("Bundled ConPTY (OpenConsole)")
+            checkable: true
+            enabled: WezTermConfig.sideloadedConptyAvailable
+            checked: WezTermConfig.sideloadConpty
+            onTriggered: WezTermConfig.sideloadConpty = checked
+        }
+        MenuSeparator { }
+        MenuItem {
+            text: qsTr("CSI-u key encoding")
+            checkable: true
+            checked: WezTermConfig.csiUKeys
+            onTriggered: WezTermConfig.csiUKeys = checked
+        }
+        MenuItem {
+            text: qsTr("Kitty keyboard protocol")
+            checkable: true
+            checked: WezTermConfig.kittyKeyboard
+            onTriggered: WezTermConfig.kittyKeyboard = checked
+        }
+        MenuItem {
+            text: qsTr("Bidirectional text (BiDi)")
+            checkable: true
+            checked: WezTermConfig.bidiEnabled
+            onTriggered: WezTermConfig.bidiEnabled = checked
+        }
+        MenuSeparator { }
+        MenuItem {
+            text: qsTr("WezTerm Settings...")
+            onTriggered: settingsWindow.showTab(settingsWindow.wezTermTabIndex)
         }
     }
     Menu {

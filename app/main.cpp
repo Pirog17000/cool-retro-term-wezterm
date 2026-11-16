@@ -136,7 +136,7 @@ int main(int argc, char *argv[])
     app.setOrganizationDomain(QStringLiteral("cool-retro-term"));
     app.setApplicationVersion(appVersion);
 
-    KDSingleApplication singleApp(QStringLiteral("cool-retro-term"));
+    KDSingleApplication singleApp(QStringLiteral("cool-retro-term-wezterm"));
 
     if (!singleApp.isPrimaryInstance()) {
         if (singleApp.sendMessage("new-window"))

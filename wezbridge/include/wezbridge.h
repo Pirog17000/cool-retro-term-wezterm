@@ -113,7 +113,41 @@ enum {
 #define WT_BUTTON_WHEEL_DOWN 4
 #define WT_BUTTON_NONE       5
 
-WtTerminal* wt_new(uint32_t rows, uint32_t cols, uint32_t scrollback, uint8_t conpty_quirks);
+/* Emulation settings (the subset of wezterm's config that applies to the core). */
+#define WT_PASTE_NEWLINES_DEFAULT 0 /* platform default (CRLF on Windows) */
+#define WT_PASTE_NEWLINES_NONE    1
+#define WT_PASTE_NEWLINES_LF      2
+#define WT_PASTE_NEWLINES_CR      3
+#define WT_PASTE_NEWLINES_CRLF    4
+
+#define WT_BIDI_LTR      0
+#define WT_BIDI_RTL      1
+#define WT_BIDI_AUTO_LTR 2
+#define WT_BIDI_AUTO_RTL 3
+
+typedef struct WtConfig {
+    uint32_t scrollback;
+    uint8_t csi_u_keys;       /* enable_csi_u_key_encoding */
+    uint8_t kitty_keyboard;   /* enable_kitty_keyboard */
+    uint8_t unicode_version;  /* 9..16 (applies to new tabs) */
+    uint8_t ambiguous_wide;   /* East Asian ambiguous width as wide (new tabs) */
+    uint8_t paste_newlines;   /* WT_PASTE_NEWLINES_* */
+    uint8_t normalize_nfc;    /* normalize_output_to_unicode_nfc */
+    uint8_t bidi_enabled;
+    uint8_t bidi_hint;        /* WT_BIDI_* */
+    uint8_t title_reporting;  /* enable_title_reporting */
+    uint8_t _pad[3];
+    char answerback[64];      /* enq_answerback, NUL terminated */
+} WtConfig;
+
+typedef void (*WtOutputCallback)(void* user);
+
+void wt_default_config(WtConfig* out);
+WtTerminal* wt_new(uint32_t rows, uint32_t cols, const WtConfig* config, uint8_t conpty_quirks);
+void wt_set_config(WtTerminal* t, const WtConfig* config);
+/* cb runs on a background thread whenever output becomes available.
+ * Set cb = NULL before wt_free(): once that call returns, no further calls happen. */
+void wt_set_output_callback(WtTerminal* t, WtOutputCallback cb, void* user);
 void wt_free(WtTerminal* t);
 
 void wt_advance(WtTerminal* t, const uint8_t* data, size_t len);
