@@ -8,6 +8,8 @@ on:
       - master
     tags:
       - '*'
+      # crt-* tags are the wezterm builds (build-wezterm-crt.yml)
+      - '!crt-*'
 
 permissions:
   contents: write
