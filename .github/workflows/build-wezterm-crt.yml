@@ -36,7 +36,7 @@ jobs:
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: '0'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Release tag and wezterm ref
         id: meta
@@ -87,7 +87,10 @@ jobs:
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
         run: |
-          $info = Get-Content dist-wezterm/build_info.json -Raw | ConvertFrom-Json
+          # read the values as text: ConvertFrom-Json would turn the ISO dates into local DateTimes
+          $raw = Get-Content dist-wezterm/build_info.json -Raw
+          $info = @{}
+          foreach ($m in [regex]::Matches($raw, '"(\w+)":\s*"([^"]*)"')) { $info[$m.Groups[1].Value] = $m.Groups[2].Value }
           $notes = @(
             "cool-retro-term CRT look on top of wezterm.",
             "",
