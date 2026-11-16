@@ -56,6 +56,14 @@ buttons sit in wezterm's own title bar, drawn flat (no CRT effects) above the
 curved screen.  Mouse clicks and selection on the curved screen are mapped
 through the same distortion the shader uses.
 
+The mouse pointer is reflected for a sense of depth: a faint, blurred image
+in the convex glass (pulled towards the centre and bent by the bulge) and a
+mirrored one in the bezel next to the text reflection (wrapped around the
+rounded corners).  Its strength is **CRT effects > Pointer reflection**
+(`pointer_reflection`, 0 turns it off); the size follows the Windows pointer
+size setting.  For screenshots, `WEZTERM_CRT_DEBUG_POINTER=x,y` (or
+`x,y,text` for the I-beam) places a fixed pointer instead of the mouse.
+
 Settings: the **gear** button in the title bar (or **Ctrl+Shift+,**) opens a
 menu on the CRT screen with the main categories only: **Profile**, **Font**,
 **CRT effects** (on/off, every effect value, rasterization, phosphor color,

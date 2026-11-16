@@ -39,7 +39,11 @@ M.effects = {
   { 'frame_size', 'Frame size' },
   { 'frame_shininess', 'Frame shininess' },
   { 'screen_radius', 'Screen radius' },
+  { 'pointer_reflection', 'Pointer reflection' },
 }
+
+-- Effects that are not part of cool-retro-term's profiles: their defaults
+M.effect_defaults = { pointer_reflection = 0.5 }
 
 M.rasterization_names = { [0] = 'None', 'Scanlines', 'Pixels', 'Sub-pixels', 'Modern' }
 
@@ -277,6 +281,9 @@ local function current(window)
   if not M.profiles[name] then name = 'Default Amber' end
   local p = M.profiles[name]
   local eff = copy(p)
+  for k, v in pairs(M.effect_defaults) do
+    if eff[k] == nil then eff[k] = v end
+  end
   if crt.profile == name then
     for k, v in pairs(crt) do
       if v ~= nil then eff[k] = v end
@@ -321,7 +328,7 @@ local function value_menu(window, pane, key, label)
   local _, p, eff = current(window)
   local cur = eff[key]
   local choices = {
-    { id = '__profile', label = string.format('  profile default (%s)', fmt(p[key])) },
+    { id = '__profile', label = string.format('  profile default (%s)', fmt(p[key] or M.effect_defaults[key])) },
   }
   for _, v in ipairs(VALUES) do
     local mark = (type(cur) == 'number' and math.abs(cur - v) < 0.001) and '> ' or '  '

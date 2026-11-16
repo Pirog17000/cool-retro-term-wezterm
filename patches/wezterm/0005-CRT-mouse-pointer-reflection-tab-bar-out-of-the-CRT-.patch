@@ -1,0 +1,622 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: cool-retro-term-wezterm <build@localhost>
+Date: Mon, 16 Nov 2026 20:04:41 +0100
+Subject: [PATCH 5/5] CRT: mouse pointer reflection; tab bar out of the CRT
+ scene; reflecting corners
+
+Pointer reflection (crt.pointer_reflection, 0..1, default 0.5):
+- in the convex glass: pulled towards the centre, squeezed along the
+  radius and bent around the bulge, more so towards the edges;
+- in the bezel: mirrored like the text, starting a little further out
+  (the pointer floats above the glass), squeezed across the sloped edge,
+  bent like the screen, and wrapped around the rounded corners.
+The pointer size follows the Windows pointer size setting
+(CursorBaseSize) and the DPI.  WEZTERM_CRT_DEBUG_POINTER="x,y[,text]"
+places a fixed pointer for screenshots and tests.
+
+The tab bar (title bar buttons) is no longer part of the CRT scene: the
+hovered close button reached into the screen and leaked into the picture
+and its reflections.  The bezel mirror is computed explicitly (the
+samplers clamp), and the bezel corners now reflect the content too.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Cargo.lock                                |   1 +
+ config/src/crt.rs                         |   8 ++
+ wezterm-gui/Cargo.toml                    |   1 +
+ wezterm-gui/src/crt/mod.rs                |  49 +++++++++
+ wezterm-gui/src/crt/shaders.glsl          | 121 +++++++++++++++++++++-
+ wezterm-gui/src/termwindow/keyevent.rs    |   4 +-
+ wezterm-gui/src/termwindow/mod.rs         |   6 ++
+ wezterm-gui/src/termwindow/mouseevent.rs  |  23 ++--
+ wezterm-gui/src/termwindow/render/draw.rs | 104 ++++++++++++++++---
+ 9 files changed, 290 insertions(+), 27 deletions(-)
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 5fe16c0..a32fad0 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -7188,6 +7188,7 @@ dependencies = [
+  "window",
+  "window-funcs",
+  "windows 0.33.0",
++ "winreg",
+ ]
+ 
+ [[package]]
+diff --git a/config/src/crt.rs b/config/src/crt.rs
+index 831e7ea..1d9e84c 100644
+--- a/config/src/crt.rs
++++ b/config/src/crt.rs
+@@ -143,6 +143,11 @@ pub struct CrtConfig {
+     /// slides in over the screen when the mouse touches the window edge.
+     #[dynamic(default = "default_true")]
+     pub fullscreen_autohide_tab_bar: bool,
++
++    /// Reflection of the mouse pointer in the convex glass and, mirrored, in
++    /// the bezel (0 = off, 0.5 = default).  Not part of cool-retro-term.
++    #[dynamic(default)]
++    pub pointer_reflection: Option<f32>,
+ }
+ 
+ impl Default for CrtConfig {
+@@ -176,6 +181,7 @@ impl Default for CrtConfig {
+             burn_in_quality: default_quality(),
+             fps: default_fps(),
+             fullscreen_autohide_tab_bar: true,
++            pointer_reflection: None,
+         }
+     }
+ }
+@@ -223,6 +229,7 @@ pub struct CrtParams {
+     pub bloom_quality: f32,
+     pub burn_in_quality: f32,
+     pub fps: u8,
++    pub pointer_reflection: f32,
+ }
+ 
+ impl CrtConfig {
+@@ -258,6 +265,7 @@ impl CrtConfig {
+             bloom_quality: self.bloom_quality.clamp(0.1, 1.0),
+             burn_in_quality: self.burn_in_quality.clamp(0.1, 1.0),
+             fps: self.fps.clamp(1, 120),
++            pointer_reflection: self.pointer_reflection.unwrap_or(0.5).clamp(0.0, 1.0),
+         }
+     }
+ }
+diff --git a/wezterm-gui/Cargo.toml b/wezterm-gui/Cargo.toml
+index a9f6cdf..77cb82b 100644
+--- a/wezterm-gui/Cargo.toml
++++ b/wezterm-gui/Cargo.toml
+@@ -121,6 +121,7 @@ winapi = { workspace=true, features = [
+ windows = { workspace=true, features = [
+     "Win32_UI_Shell",
+ ]}
++winreg.workspace = true
+ 
+ [dev-dependencies]
+ benchmarking.workspace = true
+diff --git a/wezterm-gui/src/crt/mod.rs b/wezterm-gui/src/crt/mod.rs
+index 9cdaf99..b7397d4 100644
+--- a/wezterm-gui/src/crt/mod.rs
++++ b/wezterm-gui/src/crt/mod.rs
+@@ -171,6 +171,18 @@ pub fn distort_point(p: &CrtParams, rect: &ScreenRect, tc: (f32, f32)) -> (f32,
+     )
+ }
+ 
++/// The mouse pointer over the screen, for its reflections in the glass and
++/// in the bezel.
++#[derive(Debug, Clone, Copy)]
++pub struct Pointer {
++    /// position on the screen rect, 0..1
++    pub pos: (f32, f32),
++    /// size of the cursor box in pixels
++    pub size: f32,
++    /// 1 = arrow, 2 = I-beam
++    pub kind: i32,
++}
++
+ struct Targets {
+     window_size: (u32, u32),
+     size: (u32, u32),
+@@ -310,6 +322,7 @@ impl CrtRenderer {
+         rect: &ScreenRect,
+         p: &CrtParams,
+         cell_height: f32,
++        pointer: Option<Pointer>,
+     ) -> anyhow::Result<()> {
+         let Some(t) = self.targets.as_ref() else {
+             return Ok(());
+@@ -387,6 +400,27 @@ impl CrtRenderer {
+         let rgb_shift = p.rgb_shift * (4.0 / wf);
+         let screen_brightness = lint(0.5, 1.5, p.brightness);
+ 
++        let viewport_size = [wf, hf];
++        let (pointer_kind, pointer_pos, pointer_content, pointer_size) = match pointer {
++            Some(ptr) if p.pointer_reflection > 0.0 => {
++                let c = distort_point(p, rect, ptr.pos);
++                (ptr.kind, [ptr.pos.0, ptr.pos.1], [c.0, c.1], ptr.size.max(1.0))
++            }
++            _ => (0i32, [-1.0f32, -1.0], [-1.0f32, -1.0], 32.0f32),
++        };
++        let pointer_glass = p.pointer_reflection * 0.15;
++        let pointer_frame = p.pointer_reflection * 1.0;
++        let pointer_shift = 0.03 + 0.25 * screen_curvature;
++        // warp of the glass reflection, from the curvature setting (0..1)
++        let pointer_bend = 0.2 + 0.9 * p.screen_curvature;
++        let pointer_squeeze = 0.1 + 0.35 * p.screen_curvature;
++        // the pointer's height above the glass: the gap between it and its
++        // image in the bezel (never so much that the image leaves the bezel)
++        let pointer_lift = (pointer_size * 0.2).min(frame_size[0] * wf * 0.5);
++        // the bezel mirror is rounded at the corners, so that a pointer near
++        // a corner gives one image wrapped around it
++        let pointer_corner = (pointer_size * 1.5).max(screen_radius);
++
+         // ---- 1. bloom ------------------------------------------------------
+         if bloom_on {
+             let (bw, bh) = t.bloom_size;
+@@ -448,6 +482,13 @@ impl CrtRenderer {
+                 frameSize: frame_size,
+                 aspectScale: aspect_scale,
+                 screen_brightness: screen_brightness,
++                viewportSize: viewport_size,
++                pointerPos: pointer_content,
++                pointerSize: pointer_size,
++                pointerKind: pointer_kind,
++                pointerFrame: pointer_frame,
++                pointerLift: pointer_lift,
++                pointerCorner: pointer_corner,
+                 bloom: bloom,
+                 curvatureOn: if curvature_on { 1.0f32 } else { 0.0 },
+                 bloomOn: if bloom_on { 1.0f32 } else { 0.0 },
+@@ -499,6 +540,14 @@ impl CrtRenderer {
+             u.add("bloom", &bloom);
+             u.add("frameOn", &frame_on_f);
+             u.add("tintOn", &tint_on);
++            u.add("viewportSize", &viewport_size);
++            u.add("pointerPos", &pointer_pos);
++            u.add("pointerSize", &pointer_size);
++            u.add("pointerKind", &pointer_kind);
++            u.add("pointerGlass", &pointer_glass);
++            u.add("pointerShift", &pointer_shift);
++            u.add("pointerBend", &pointer_bend);
++            u.add("pointerSqueeze", &pointer_squeeze);
+             let viewport = glium::DrawParameters {
+                 viewport: Some(screen_gl),
+                 ..Default::default()
+diff --git a/wezterm-gui/src/crt/shaders.glsl b/wezterm-gui/src/crt/shaders.glsl
+index 4152060..7636691 100644
+--- a/wezterm-gui/src/crt/shaders.glsl
++++ b/wezterm-gui/src/crt/shaders.glsl
+@@ -18,6 +18,46 @@ float prod2(vec2 v) { return v.x * v.y; }
+ float rgb2grey(vec3 v) { return dot(v, vec3(0.21, 0.72, 0.04)); }
+ float rand2(vec2 v) { return fract(sin(dot(v, vec2(12.9898, 78.233))) * 43758.5453); }
+ 
++// Mouse pointer shapes for the pointer reflection.  Signed distances in
++// pointer units: the cursor box is 1 x 1, the origin is the hotspot, y down.
++float sdBox(vec2 p, vec2 b) {
++    vec2 d = abs(p) - b;
++    return length(max(d, vec2(0.0))) + min(max(d.x, d.y), 0.0);
++}
++float sdIBeam(vec2 p) {
++    float stem = sdBox(p, vec2(0.035, 0.28));
++    float top = sdBox(p - vec2(0.0, -0.27), vec2(0.14, 0.03));
++    float bottom = sdBox(p - vec2(0.0, 0.27), vec2(0.14, 0.03));
++    return min(stem, min(top, bottom));
++}
++float sdArrow(vec2 p) {
++    // the classic arrow, tip at the hotspot, in 1/32 of the cursor box
++    vec2 v[7] = vec2[7](vec2(0.0, 0.0), vec2(0.0, 17.0), vec2(4.0, 13.0), vec2(7.0, 20.0),
++                        vec2(9.5, 19.0), vec2(6.5, 12.0), vec2(11.5, 12.0));
++    p *= 32.0;
++    float d = dot(p - v[0], p - v[0]);
++    float s = 1.0;
++    for (int i = 0, j = 6; i < 7; j = i, i++) {
++        vec2 e = v[j] - v[i];
++        vec2 w = p - v[i];
++        vec2 b = w - e * clamp(dot(w, e) / dot(e, e), 0.0, 1.0);
++        d = min(d, dot(b, b));
++        bvec3 c = bvec3(p.y >= v[i].y, p.y < v[j].y, e.x * w.y > e.y * w.x);
++        if (all(c) || all(not(c))) s = -s;
++    }
++    return s * sqrt(d) / 32.0;
++}
++// Middle of the pointer shape (the pivot when the reflection is warped).
++vec2 pointerCentre(int kind) {
++    return (kind == 2) ? vec2(0.0) : vec2(0.18, 0.31);
++}
++// 0..1 coverage of the pointer at p, softened like a gaussian blur.
++// kind: 1 = arrow, 2 = I-beam
++float pointerShape(vec2 p, int kind, float blur) {
++    float d = (kind == 2) ? sdIBeam(p) : sdArrow(p);
++    return 1.0 - smoothstep(-blur, blur, d);
++}
++
+ //!! quad_vertex
+ in vec2 position;
+ in vec2 tex_coords;
+@@ -145,6 +185,13 @@ uniform float screen_brightness;
+ uniform float bloom;
+ uniform float curvatureOn;
+ uniform float bloomOn;
++uniform vec2 viewportSize;
++uniform vec2 pointerPos;     // pointer position in content coordinates
++uniform float pointerSize;   // cursor box in pixels
++uniform int pointerKind;     // 0 = none
++uniform float pointerFrame;  // strength in the bezel reflection
++uniform float pointerLift;   // height of the pointer above the glass, in pixels
++uniform float pointerCorner; // corner radius of the bezel mirror, in pixels
+ 
+ vec2 distortCoordinates(vec2 coords) {
+     vec2 paddedCoords = coords * (vec2(1.0) + frameSize * 2.0) - frameSize;
+@@ -159,13 +206,15 @@ void main() {
+     float isScreen = 1.0;
+ 
+     vec2 txt_coords = tc;
++    vec2 curvatureCoords = tc;
+     if (curvatureOn > 0.5) {
+-        vec2 curvatureCoords = distortCoordinates(tc);
+-        shownDraw = max2(step(vec2(0.0), curvatureCoords) - step(vec2(1.0), curvatureCoords));
++        curvatureCoords = distortCoordinates(tc);
+         isScreen = min2(step(vec2(0.0), curvatureCoords) - step(vec2(1.0), curvatureCoords));
+         isReflection = shownDraw - isScreen;
+-        txt_coords = curvatureCoords * (-1.0 + 2.0 * step(vec2(0.0), curvatureCoords)
+-                                       - 2.0 * step(vec2(1.0), curvatureCoords));
++        // The bezel shows the content mirrored through the nearest point of
++        // the screen: at an edge that is the edge, in a corner the corner
++        // itself.  (cool-retro-term leaves the corners empty.)
++        txt_coords = vec2(1.0) - abs(vec2(1.0) - abs(curvatureCoords));
+     }
+ 
+     vec3 txt_color = tx(source, txt_coords).rgb;
+@@ -201,6 +250,41 @@ void main() {
+         finalColor = mix(finalColor, reflectionColor, isReflection);
+     }
+ 
++    // The mouse pointer is mirrored in the bezel too.  The bezel is taken as
++    // a curved frame with rounded corners (radius pointerCorner): along an
++    // edge the mirror is flat, around a corner it is radial from the centre
++    // of the rounding, so the image wraps around the corner.  The pointer floats above the glass, so its
++    // image starts pointerLift further out; the bezel slopes away, so the
++    // image is squeezed across the edge; and the bezel is curved like the
++    // screen, so the ends of the image lean back towards the screen.
++    if (pointerKind > 0 && isReflection > 0.5) {
++        const float FORESHORTEN = 0.55;
++        const float BEND = 1.6;
++        vec2 cpx = curvatureCoords * viewportSize;
++        vec2 ppx = pointerPos * viewportSize;
++        float rc = min(pointerCorner, 0.5 * min2(viewportSize));
++        vec2 inner = clamp(cpx, vec2(rc), viewportSize - vec2(rc));
++        vec2 v = cpx - inner;
++        float rv = max(length(v), 1e-4);
++        vec2 n = v / rv;                     // outwards
++        vec2 t = vec2(-n.y, n.x);            // along the edge
++        // the mirror line is the screen edge itself (as for the text); in a
++        // corner it is crossed radially, so the corner is not cut off
++        float r0 = rc / max(max2(abs(n)), 1e-4);
++        float d = rv - r0;                   // distance out from the edge
++        vec2 centre = pointerCentre(pointerKind);
++        float s = dot(ppx + centre * pointerSize - inner, t) / pointerSize;
++        float depth = (d - pointerLift) / FORESHORTEN + BEND * s * s * pointerSize;
++        vec2 world = inner + n * (r0 - depth);
++        vec2 pp = (world - ppx) / pointerSize;
++        // further out the bezel is rougher: softer and fainter; a corner
++        // only mirrors what is within its radius
++        float far = clamp(d / pointerSize, 0.0, 1.0);
++        float corner = step(1e-3, min2(abs(v)));
++        float weight = (1.0 - 0.5 * far) * (1.0 - corner * smoothstep(0.8, 1.0, depth / max(r0, 1.0)));
++        finalColor += vec3(pointerShape(pp, pointerKind, 0.10 + 0.08 * far)) * pointerFrame * weight;
++    }
++
+     finalColor *= screen_brightness;
+ 
+     float noise = rand2(tc) - 0.5;
+@@ -270,6 +354,14 @@ uniform vec2 aspectScale;  // bulge per axis: the same displacement in pixels on
+ uniform float bloom;
+ uniform float frameOn;
+ uniform float tintOn;
++uniform vec2 viewportSize;
++uniform vec2 pointerPos;     // pointer position on the screen, 0..1
++uniform float pointerSize;   // cursor box in pixels
++uniform int pointerKind;     // 0 = none
++uniform float pointerGlass;  // strength of the reflection in the glass
++uniform float pointerShift;  // pull towards the centre (convex glass)
++uniform float pointerBend;   // how much the image bends around the bulge
++uniform float pointerSqueeze; // how much it is squeezed along the radius
+ 
+ vec2 distortCoordinates(vec2 coords) {
+     vec2 paddedCoords = coords * (vec2(1.0) + frameSize * 2.0) - frameSize;
+@@ -379,5 +471,26 @@ void main() {
+         finalColor = mix(finalColor, frameColor.rgb, frameColor.a);
+     }
+ 
++    // Reflection of the mouse pointer in the convex glass, the further from
++    // the centre the stronger: pulled towards the centre, squeezed along the
++    // radius and bent into an arc around the bulge (its ends lag towards the
++    // centre, like straight lines on the curved screen).
++    if (pointerKind > 0) {
++        vec2 px = (tc - vec2(0.5)) * viewportSize;          // pixels from the centre
++        vec2 ghost = (pointerPos - vec2(0.5)) * viewportSize * (1.0 - pointerShift);
++        float glen = length(ghost);
++        float r = glen / (0.25 * (viewportSize.x + viewportSize.y));
++        vec2 radial = glen > 1.0 ? ghost / glen : vec2(1.0, 0.0);
++        vec2 tangent = vec2(-radial.y, radial.x);
++        vec2 centre = pointerCentre(pointerKind);
++        vec2 l = (px - ghost) / pointerSize - centre;
++        float lr = dot(l, radial);
++        float lt = dot(l, tangent);
++        lr = (lr + pointerBend * r * lt * lt) * (1.0 + pointerSqueeze * r);
++        vec2 pp = radial * lr + tangent * lt + centre;
++        float onGlass = min2(step(vec2(0.0), staticCoords) - step(vec2(1.0), staticCoords));
++        finalColor += vec3(pointerShape(pp, pointerKind, 0.12)) * pointerGlass * onGlass;
++    }
++
+     color = vec4(finalColor, 1.0);
+ }
+diff --git a/wezterm-gui/src/termwindow/keyevent.rs b/wezterm-gui/src/termwindow/keyevent.rs
+index d669080..2ed277e 100644
+--- a/wezterm-gui/src/termwindow/keyevent.rs
++++ b/wezterm-gui/src/termwindow/keyevent.rs
+@@ -412,7 +412,7 @@ impl super::TermWindow {
+                             && self.config.hide_mouse_cursor_when_typing
+                             && !keycode.is_modifier()
+                         {
+-                            context.set_cursor(None);
++                            self.crt_set_cursor(context, None);
+                         }
+                         if !keycode.is_modifier() {
+                             context.invalidate();
+@@ -713,7 +713,7 @@ impl super::TermWindow {
+                         && self.config.hide_mouse_cursor_when_typing
+                         && !key.is_modifier()
+                     {
+-                        context.set_cursor(None);
++                        self.crt_set_cursor(context, None);
+                     }
+                     if !key.is_modifier() {
+                         context.invalidate();
+diff --git a/wezterm-gui/src/termwindow/mod.rs b/wezterm-gui/src/termwindow/mod.rs
+index e841cee..d633ddf 100644
+--- a/wezterm-gui/src/termwindow/mod.rs
++++ b/wezterm-gui/src/termwindow/mod.rs
+@@ -459,6 +459,10 @@ pub struct TermWindow {
+     crt_failed: std::cell::Cell<bool>,
+     /// Full screen + CRT: the auto-hidden tab bar is currently shown.
+     crt_bar_revealed: std::cell::Cell<bool>,
++    /// Mouse position in window pixels and the cursor shown there, for the
++    /// CRT pointer reflection.
++    crt_pointer: std::cell::Cell<Option<(f32, f32)>>,
++    crt_cursor_icon: std::cell::Cell<Option<::window::CursorIcon>>,
+ 
+     created: Instant,
+ 
+@@ -690,6 +694,8 @@ impl TermWindow {
+             crt: RefCell::new(None),
+             crt_failed: std::cell::Cell::new(false),
+             crt_bar_revealed: std::cell::Cell::new(false),
++            crt_pointer: std::cell::Cell::new(None),
++            crt_cursor_icon: std::cell::Cell::new(None),
+             created: Instant::now(),
+             connection_name,
+             last_fps_check_time: Instant::now(),
+diff --git a/wezterm-gui/src/termwindow/mouseevent.rs b/wezterm-gui/src/termwindow/mouseevent.rs
+index 73de85c..8f59057 100644
+--- a/wezterm-gui/src/termwindow/mouseevent.rs
++++ b/wezterm-gui/src/termwindow/mouseevent.rs
+@@ -62,6 +62,12 @@ impl super::TermWindow {
+         if self.crt_update_bar_reveal(event.coords.x as f32, event.coords.y as f32) {
+             context.invalidate();
+         }
++        // the pointer reflection follows the mouse
++        self.crt_pointer
++            .set(Some((event.coords.x as f32, event.coords.y as f32)));
++        if self.config.crt.enabled && self.config.crt.resolve().pointer_reflection > 0.0 {
++            context.invalidate();
++        }
+         let event = self.crt_map_mouse_event(event);
+         log::trace!("{:?}", event);
+         let pane = match self.get_active_pane_or_overlay() {
+@@ -250,8 +256,9 @@ impl super::TermWindow {
+ 
+     pub fn mouse_leave_impl(&mut self, context: &dyn WindowOps) {
+         self.current_mouse_event = None;
++        self.crt_pointer.set(None);
+         self.update_title();
+-        context.set_cursor(Some(CursorIcon::Default));
++        self.crt_set_cursor(context, Some(CursorIcon::Default));
+         context.invalidate();
+     }
+ 
+@@ -402,7 +409,7 @@ impl super::TermWindow {
+             }
+             _ => {}
+         }
+-        context.set_cursor(Some(CursorIcon::Default));
++        self.crt_set_cursor(context, Some(CursorIcon::Default));
+     }
+ 
+     fn do_new_tab_button_click(&mut self, button: MousePress) {
+@@ -608,7 +615,7 @@ impl super::TermWindow {
+             }
+             _ => {}
+         }
+-        context.set_cursor(Some(CursorIcon::Default));
++        self.crt_set_cursor(context, Some(CursorIcon::Default));
+     }
+ 
+     pub fn mouse_event_above_scroll_thumb(
+@@ -633,7 +640,7 @@ impl super::TermWindow {
+             );
+             context.invalidate();
+         }
+-        context.set_cursor(Some(CursorIcon::Default));
++        self.crt_set_cursor(context, Some(CursorIcon::Default));
+     }
+ 
+     pub fn mouse_event_below_scroll_thumb(
+@@ -658,7 +665,7 @@ impl super::TermWindow {
+             );
+             context.invalidate();
+         }
+-        context.set_cursor(Some(CursorIcon::Default));
++        self.crt_set_cursor(context, Some(CursorIcon::Default));
+     }
+ 
+     pub fn mouse_event_scroll_thumb(
+@@ -673,7 +680,7 @@ impl super::TermWindow {
+             // self.scroll_drag_start = Some(from_top);
+             self.dragging = Some((item, event));
+         }
+-        context.set_cursor(Some(CursorIcon::Default));
++        self.crt_set_cursor(context, Some(CursorIcon::Default));
+     }
+ 
+     pub fn mouse_event_split(
+@@ -683,7 +690,7 @@ impl super::TermWindow {
+         event: MouseEvent,
+         context: &dyn WindowOps,
+     ) {
+-        context.set_cursor(Some(match &split.direction {
++        self.crt_set_cursor(context, Some(match &split.direction {
+             SplitDirection::Horizontal => CursorIcon::EwResize,
+             SplitDirection::Vertical => CursorIcon::NsResize,
+         }));
+@@ -881,7 +888,7 @@ impl super::TermWindow {
+             || event.coords.y < 0
+             || event.coords.y as usize > self.dimensions.pixel_height;
+ 
+-        context.set_cursor(Some(if self.current_highlight.is_some() {
++        self.crt_set_cursor(context, Some(if self.current_highlight.is_some() {
+             // When hovering over a hyperlink, show an appropriate
+             // mouse cursor to give the cue that it is clickable
+             CursorIcon::Pointer
+diff --git a/wezterm-gui/src/termwindow/render/draw.rs b/wezterm-gui/src/termwindow/render/draw.rs
+index 6339ec0..4e61334 100644
+--- a/wezterm-gui/src/termwindow/render/draw.rs
++++ b/wezterm-gui/src/termwindow/render/draw.rs
+@@ -179,23 +179,19 @@ impl crate::TermWindow {
+                     self.dimensions.pixel_height as u32,
+                 );
+                 let rect = self.crt_screen_rect_unchecked();
+-                // Full screen: the auto-hidden tab bar is drawn over the
+-                // finished CRT image instead of being part of the scene.
+-                let overlay = self.crt_bar_overlay_visible();
++                // The tab bar (title bar with the window buttons, or the
++                // auto-hidden bar in full screen) is drawn over the finished
++                // CRT image and never takes part in the scene: its buttons
++                // reach a pixel or two into the screen area and would leak
++                // into the picture and its reflections.
+                 {
+                     let mut scene = crt.scene_target(window, &rect, &params)?;
+-                    let layers = if overlay {
+-                        SceneLayers::ExceptTabBar
+-                    } else {
+-                        SceneLayers::All
+-                    };
+-                    self.draw_scene_glium(&mut scene, layers, true)?;
++                    self.draw_scene_glium(&mut scene, SceneLayers::ExceptTabBar, true)?;
+                 }
+                 let cell_height = self.render_metrics.cell_size.height as f32;
+-                crt.render(frame, &rect, &params, cell_height)?;
+-                if overlay {
+-                    self.draw_scene_glium(frame, SceneLayers::OnlyTabBar, false)?;
+-                }
++                let pointer = self.crt_pointer_for(&rect, &params);
++                crt.render(frame, &rect, &params, cell_height, pointer)?;
++                self.draw_scene_glium(frame, SceneLayers::OnlyTabBar, false)?;
+                 return Ok(());
+             }
+         }
+@@ -277,6 +273,42 @@ impl crate::TermWindow {
+         }
+     }
+ 
++    /// Sets the mouse cursor and remembers it for the CRT pointer reflection.
++    pub fn crt_set_cursor(
++        &self,
++        context: &dyn ::window::WindowOps,
++        cursor: Option<::window::CursorIcon>,
++    ) {
++        self.crt_cursor_icon.set(cursor);
++        context.set_cursor(cursor);
++    }
++
++    /// The mouse pointer over the CRT screen, for its reflections.
++    fn crt_pointer_for(
++        &self,
++        rect: &crate::crt::ScreenRect,
++        p: &config::CrtParams,
++    ) -> Option<crate::crt::Pointer> {
++        if p.pointer_reflection <= 0.0 {
++            return None;
++        }
++        let (x, y, kind) = match (crt_debug_pointer(), self.crt_pointer.get(), self.crt_cursor_icon.get()) {
++            (Some(debug), _, _) => debug,
++            (None, Some((x, y)), Some(icon)) => {
++                (x, y, if icon == ::window::CursorIcon::Text { 2 } else { 1 })
++            }
++            _ => return None,
++        };
++        if !rect.contains(x, y) {
++            return None;
++        }
++        Some(crate::crt::Pointer {
++            pos: ((x - rect.x) / rect.w, (y - rect.y) / rect.h),
++            size: crt_cursor_base_size() * self.dimensions.dpi as f32 / 96.0,
++            kind,
++        })
++    }
++
+     /// The CRT screen rect when the CRT effects are actually being drawn.
+     pub fn crt_screen_rect(&self) -> Option<crate::crt::ScreenRect> {
+         if !self.config.crt.enabled || self.crt_failed.get() {
+@@ -472,3 +504,49 @@ impl SceneLayers {
+         }
+     }
+ }
++
++/// Size of the mouse pointer at 96 dpi: the pointer size chosen in the
++/// Windows accessibility settings (CursorBaseSize, 32 by default).  Read
++/// again every few seconds, the setting can change at any time.
++fn crt_cursor_base_size() -> f32 {
++    #[cfg(windows)]
++    {
++        use std::cell::Cell;
++        use std::time::{Duration, Instant};
++        thread_local! {
++            static CACHE: Cell<Option<(Instant, f32)>> = Cell::new(None);
++        }
++        if let Some((at, size)) = CACHE.with(|c| c.get()) {
++            if at.elapsed() < Duration::from_secs(2) {
++                return size;
++            }
++        }
++        let size = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
++            .open_subkey("Control Panel\\Cursors")
++            .and_then(|k| k.get_value::<u32, _>("CursorBaseSize"))
++            .map(|v| v as f32)
++            .unwrap_or(32.0)
++            .clamp(16.0, 512.0);
++        CACHE.with(|c| c.set(Some((Instant::now(), size))));
++        size
++    }
++    #[cfg(not(windows))]
++    {
++        32.0
++    }
++}
++
++/// WEZTERM_CRT_DEBUG_POINTER="x,y" or "x,y,text": a pointer position in
++/// window pixels (arrow, or I-beam with ",text") used instead of the real
++/// mouse, so the pointer reflection can be captured in screenshots and tests.
++fn crt_debug_pointer() -> Option<(f32, f32, i32)> {
++    static DEBUG: std::sync::OnceLock<Option<(f32, f32, i32)>> = std::sync::OnceLock::new();
++    *DEBUG.get_or_init(|| {
++        let v = std::env::var("WEZTERM_CRT_DEBUG_POINTER").ok()?;
++        let mut it = v.split(',').map(str::trim);
++        let x = it.next()?.parse().ok()?;
++        let y = it.next()?.parse().ok()?;
++        let kind = if it.next() == Some("text") { 2 } else { 1 };
++        Some((x, y, kind))
++    })
++}

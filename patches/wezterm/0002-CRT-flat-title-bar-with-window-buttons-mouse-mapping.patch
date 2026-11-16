@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: cool-retro-term-wezterm <build@localhost>
 Date: Mon, 16 Nov 2026 16:35:57 +0100
-Subject: [PATCH 2/4] CRT: flat title bar with window buttons, mouse mapping,
+Subject: [PATCH 2/5] CRT: flat title bar with window buttons, mouse mapping,
  full screen auto-hide
 
 - the CRT passes only cover the terminal area; the tab bar (which holds
