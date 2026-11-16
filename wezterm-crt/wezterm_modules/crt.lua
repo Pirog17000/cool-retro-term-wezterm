@@ -244,18 +244,26 @@ end
 -- (Esc in the main menu closes it), / searches.  After a value is picked the
 -- menu returns to the list it came from, so several values can be tuned in a
 -- row.  The main menu holds only the main categories.
+--
+-- Choices with a `slider` (value, min, max, step, names) show a bar that
+-- Left/Right move while the menu stays open (Shift: finer); every change
+-- goes to on_adjust(window, pane, id, value) and is applied at once.
 
-local function selector(window, pane, title, choices, on_pick, on_back)
+local function selector(window, pane, title, choices, on_pick, on_back, on_adjust)
   local esc = on_back and 'Esc = back' or 'Esc = close'
+  local keys = on_adjust and 'Up/Down = move, Left/Right = adjust, Enter = choose, '
+    or 'Up/Down = move, Enter = choose, '
   window:perform_action(
     act.InputSelector {
       title = title,
-      description = title .. '      Up/Down = move, Enter = choose, ' .. esc .. ', / = search',
+      description = title .. '      ' .. keys .. esc .. ', / = search',
       alphabet = '', -- no number labels: arrow keys only
       choices = choices,
       fuzzy = false,
-      action = wezterm.action_callback(function(w, p, id, _label)
-        if id then
+      action = wezterm.action_callback(function(w, p, id, _label, value)
+        if value ~= nil then
+          if on_adjust and id then on_adjust(w, p, id, value) end
+        elseif id then
           on_pick(w, p, id)
         elseif on_back then
           on_back(w, p)
@@ -373,22 +381,29 @@ end
 effects_menu = function(window, pane)
   local _, _, eff = current(window)
   local choices = {
-    { id = '__toggle', label = string.format('%-18s %s', 'CRT effects', eff.enabled and 'ON   (turn off)' or 'OFF  (turn on)') },
+    { id = '__toggle', label = string.format('%-19s %s', 'CRT effects', eff.enabled and 'ON   (turn off)' or 'OFF  (turn on)') },
   }
   for _, e in ipairs(M.effects) do
-    table.insert(choices, { id = e[1], label = string.format('%-18s %s', e[2], fmt(eff[e[1]])) })
+    table.insert(choices, {
+      id = e[1],
+      label = e[2], -- the slider column follows the widest label
+      slider = { value = tonumber(eff[e[1]]) or 0, min = 0, max = 1, step = 0.05 },
+    })
   end
+  local raster_names = {}
+  for i = 0, 4 do raster_names[i + 1] = M.rasterization_names[i] end
   table.insert(choices, {
     id = '__raster',
-    label = string.format('%-18s %s', 'Rasterization', M.rasterization_names[eff.rasterization or 0]),
+    label = 'Rasterization',
+    slider = { value = eff.rasterization or 0, min = 0, max = 4, step = 1, names = raster_names },
   })
   table.insert(choices, {
     id = '__phosphor',
-    label = string.format('%-18s %s', 'Phosphor color', tostring(eff.font_color)),
+    label = string.format('%-19s %s', 'Phosphor color', tostring(eff.font_color)),
   })
   table.insert(choices, {
     id = '__reset',
-    label = string.format('%-18s %s', 'Reset CRT', 'profile, font and effects back to wezterm.lua'),
+    label = string.format('%-19s %s', 'Reset CRT', 'profile, font and effects back to wezterm.lua'),
   })
   selector(window, pane, 'Settings > CRT effects', choices, function(w, p, id)
     if id == '__toggle' then
@@ -404,7 +419,16 @@ effects_menu = function(window, pane)
     for _, e in ipairs(M.effects) do
       if e[1] == id then return value_menu(w, p, e[1], e[2]) end
     end
-  end, menu)
+  end, menu, function(_w, _p, id, value)
+    -- a slider moved: save and apply it, the menu stays open
+    update_state(function(s)
+      if id == '__raster' then
+        s.rasterization = math.floor(value + 0.5)
+      else
+        s[id] = value
+      end
+    end)
+  end)
 end
 
 menu = function(window, pane)

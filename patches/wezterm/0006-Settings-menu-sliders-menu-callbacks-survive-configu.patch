@@ -1,0 +1,545 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: cool-retro-term-wezterm <build@localhost>
+Date: Mon, 16 Nov 2026 20:26:11 +0100
+Subject: [PATCH 6/6] Settings menu sliders; menu callbacks survive
+ configuration reloads
+
+InputSelector choices can carry a slider (value, min, max, step, names):
+it is drawn as a segmented bar in one column after the labels, Left/Right
+(h/l) move it without closing the selector (Shift: a fifth of a step) and
+each change is passed to the action callback as a fifth argument.  Changes
+are reported one at a time; while one is handled only the latest waits.
+
+Callbacks created at run time (a menu opened from an event handler) only
+exist in the lua context that created them.  After a configuration reload
+their events went to the new context and were lost, so a menu reopened
+after saving a value stopped reacting.  Callback names are now unique per
+configuration generation, the last few contexts are kept (most recently
+used first), and the selector, prompt and confirmation overlays emit their
+event in the context that registered it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ config/src/keyassignment.rs         |  28 ++++
+ config/src/lib.rs                   |  63 ++++++++-
+ config/src/lua.rs                   |  27 +++-
+ wezterm-gui/src/overlay/confirm.rs  |   6 +-
+ wezterm-gui/src/overlay/prompt.rs   |   7 +-
+ wezterm-gui/src/overlay/selector.rs | 192 +++++++++++++++++++++++++++-
+ 6 files changed, 313 insertions(+), 10 deletions(-)
+
+diff --git a/config/src/keyassignment.rs b/config/src/keyassignment.rs
+index e26b556..adc4280 100644
+--- a/config/src/keyassignment.rs
++++ b/config/src/keyassignment.rs
+@@ -484,6 +484,34 @@ fn default_prompt() -> String {
+ pub struct InputSelectorEntry {
+     pub label: String,
+     pub id: Option<String>,
++    /// Optional slider shown after the label: Left/Right (or h/l) move it
++    /// without closing the selector (Shift: a fifth of a step), and every
++    /// change is passed to the action callback as a fifth argument, the new
++    /// value.
++    #[dynamic(default)]
++    pub slider: Option<InputSelectorSlider>,
++}
++
++#[derive(Debug, Clone, PartialEq, FromDynamic, ToDynamic)]
++pub struct InputSelectorSlider {
++    pub value: f64,
++    #[dynamic(default)]
++    pub min: f64,
++    #[dynamic(default = "default_slider_max")]
++    pub max: f64,
++    #[dynamic(default = "default_slider_step")]
++    pub step: f64,
++    /// Shown instead of the number: one name per step, starting at `min`
++    #[dynamic(default)]
++    pub names: Vec<String>,
++}
++
++fn default_slider_max() -> f64 {
++    1.0
++}
++
++fn default_slider_step() -> f64 {
++    0.05
+ }
+ 
+ #[derive(Debug, Clone, PartialEq, FromDynamic, ToDynamic)]
+diff --git a/config/src/lib.rs b/config/src/lib.rs
+index 527bfe8..9eece42 100644
+--- a/config/src/lib.rs
++++ b/config/src/lib.rs
+@@ -207,16 +207,48 @@ impl LuaPipe {
+ /// and updates LuaConfigState
+ struct LuaConfigState {
+     lua: Option<Rc<mlua::Lua>>,
++    /// Earlier generations, most recently used first.  A callback created at
++    /// run time (a menu opened from an event handler) only exists in the
++    /// generation that created it; events for it must still reach it after
++    /// the configuration was reloaded.
++    previous: Vec<Rc<mlua::Lua>>,
+ }
+ 
++/// How many earlier lua contexts are kept for their run time callbacks.
++const PREVIOUS_LUA_GENERATIONS: usize = 8;
++
+ impl LuaConfigState {
+     /// Consume any lua contexts sent to us via the
+     /// config loader until we end up with the most
+     /// recent one being referenced by LUA_CONFIG.
+     fn update_to_latest(&mut self) {
+         while let Ok(lua) = LUA_PIPE.receiver.try_recv() {
+-            self.lua.replace(Rc::new(lua));
++            if let Some(old) = self.lua.replace(Rc::new(lua)) {
++                self.previous.insert(0, old);
++                self.previous.truncate(PREVIOUS_LUA_GENERATIONS);
++            }
++        }
++    }
++
++    /// The lua context that has a handler for `event`: the latest one, or
++    /// else the earlier generation that registered it (which then counts as
++    /// recently used, so that a menu in use is not dropped).
++    fn get_lua_for_event(&mut self, event: &str) -> Option<Rc<mlua::Lua>> {
++        if let Some(lua) = &self.lua {
++            if lua::has_event_handler(lua, event) {
++                return Some(Rc::clone(lua));
++            }
+         }
++        if let Some(idx) = self
++            .previous
++            .iter()
++            .position(|lua| lua::has_event_handler(lua, event))
++        {
++            let lua = self.previous.remove(idx);
++            self.previous.insert(0, Rc::clone(&lua));
++            return Some(lua);
++        }
++        self.get_lua()
+     }
+ 
+     /// Take a reference on the latest generation of the lua context
+@@ -229,7 +261,10 @@ pub fn designate_this_as_the_main_thread() {
+     LUA_CONFIG.with(|lc| {
+         let mut lc = lc.borrow_mut();
+         if lc.is_none() {
+-            lc.replace(LuaConfigState { lua: None });
++            lc.replace(LuaConfigState {
++                lua: None,
++                previous: vec![],
++            });
+         }
+     });
+ }
+@@ -279,6 +314,30 @@ where
+     func(lua).await
+ }
+ 
++/// Like with_lua_config_on_main_thread, for emitting `event`: uses the lua
++/// context in which its handler was registered, which is an earlier one when
++/// a callback created at run time outlived a configuration reload.
++pub async fn with_lua_config_for_event_on_main_thread<F, RETF, RET>(
++    event: &str,
++    func: F,
++) -> anyhow::Result<RET>
++where
++    F: FnOnce(Option<Rc<mlua::Lua>>) -> RETF,
++    RETF: Future<Output = anyhow::Result<RET>>,
++{
++    let lua = LUA_CONFIG.with(|lc| {
++        let mut lc = lc.borrow_mut();
++        let lc = lc.as_mut().expect(
++            "with_lua_config_for_event_on_main_thread not called
++             from main thread, use with_lua_config instead!",
++        );
++        lc.update_to_latest();
++        lc.get_lua_for_event(event)
++    });
++
++    func(lua).await
++}
++
+ pub fn run_immediate_with_lua_config<F, RET>(func: F) -> anyhow::Result<RET>
+ where
+     F: FnOnce(Option<Rc<mlua::Lua>>) -> anyhow::Result<RET>,
+diff --git a/config/src/lua.rs b/config/src/lua.rs
+index 4f03194..b067250 100644
+--- a/config/src/lua.rs
++++ b/config/src/lua.rs
+@@ -19,6 +19,9 @@ use wezterm_dynamic::{
+ pub use mlua;
+ 
+ static LUA_REGISTRY_USER_CALLBACK_COUNT: &str = "wezterm-user-callback-count";
++static LUA_REGISTRY_GENERATION: &str = "wezterm-lua-generation";
++/// Numbers the lua contexts, one per loaded configuration.
++static LUA_GENERATION: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+ 
+ pub type SetupFunc = fn(&Lua) -> anyhow::Result<()>;
+ 
+@@ -351,6 +354,12 @@ end
+         )?;
+ 
+         lua.set_named_registry_value(LUA_REGISTRY_USER_CALLBACK_COUNT, 0)?;
++        // each loaded configuration gets its own number, so that the names
++        // of callbacks stay unique across reloads (see wrap_callback)
++        lua.set_named_registry_value(
++            LUA_REGISTRY_GENERATION,
++            LUA_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
++        )?;
+         wezterm_mod.set("action_callback", lua.create_function(action_callback)?)?;
+         wezterm_mod.set("exec_domain", lua.create_function(exec_domain)?)?;
+ 
+@@ -642,7 +651,14 @@ fn font_with_fallback<'lua>(
+ 
+ pub fn wrap_callback<'lua>(lua: &'lua Lua, callback: mlua::Function) -> mlua::Result<String> {
+     let callback_count: i32 = lua.named_registry_value(LUA_REGISTRY_USER_CALLBACK_COUNT)?;
+-    let user_event_id = format!("user-defined-{}", callback_count);
++    // Unique across configuration reloads: a callback created at run time
++    // (for example by a menu opened from an event handler) only exists in
++    // the lua context that created it, and events for it are routed there
++    // (with_lua_config_for_event_on_main_thread).
++    let generation: i64 = lua
++        .named_registry_value(LUA_REGISTRY_GENERATION)
++        .unwrap_or(0);
++    let user_event_id = format!("user-defined-{}-{}", generation, callback_count);
+     lua.set_named_registry_value(LUA_REGISTRY_USER_CALLBACK_COUNT, callback_count + 1)?;
+     register_event(lua, (user_event_id.clone(), callback))?;
+     Ok(user_event_id)
+@@ -744,6 +760,15 @@ pub fn register_event<'lua>(
+     }
+ }
+ 
++/// Whether `lua` has a handler for the event `name` (registered with
++/// wezterm.on or created by wezterm.action_callback).
++pub fn has_event_handler(lua: &Lua, name: &str) -> bool {
++    matches!(
++        lua.named_registry_value::<mlua::Value>(&format!("wezterm-event-{}", name)),
++        Ok(mlua::Value::Table(_))
++    )
++}
++
+ const IS_EVENT: &str = "wezterm-is-event-emission";
+ 
+ /// Returns true if the current lua context is being called as part
+diff --git a/wezterm-gui/src/overlay/confirm.rs b/wezterm-gui/src/overlay/confirm.rs
+index b93b7d5..36926a2 100644
+--- a/wezterm-gui/src/overlay/confirm.rs
++++ b/wezterm-gui/src/overlay/confirm.rs
+@@ -178,7 +178,11 @@ pub fn show_confirmation_overlay(
+ 
+ fn trampoline(name: String, window: GuiWin, pane: MuxPane) {
+     promise::spawn::spawn(async move {
+-        config::with_lua_config_on_main_thread(move |lua| do_event(lua, name, window, pane)).await
++        let event = name.clone();
++        config::with_lua_config_for_event_on_main_thread(&event, move |lua| {
++            do_event(lua, name, window, pane)
++        })
++        .await
+     })
+     .detach();
+ }
+diff --git a/wezterm-gui/src/overlay/prompt.rs b/wezterm-gui/src/overlay/prompt.rs
+index 5c63555..5667bc6 100644
+--- a/wezterm-gui/src/overlay/prompt.rs
++++ b/wezterm-gui/src/overlay/prompt.rs
+@@ -76,8 +76,11 @@ pub fn show_line_prompt_overlay(
+ 
+ fn trampoline(name: String, window: GuiWin, pane: MuxPane, line: Option<String>) {
+     promise::spawn::spawn(async move {
+-        config::with_lua_config_on_main_thread(move |lua| do_event(lua, name, window, pane, line))
+-            .await
++        let event = name.clone();
++        config::with_lua_config_for_event_on_main_thread(&event, move |lua| {
++            do_event(lua, name, window, pane, line)
++        })
++        .await
+     })
+     .detach();
+ }
+diff --git a/wezterm-gui/src/overlay/selector.rs b/wezterm-gui/src/overlay/selector.rs
+index 8a9516e..32a3279 100644
+--- a/wezterm-gui/src/overlay/selector.rs
++++ b/wezterm-gui/src/overlay/selector.rs
+@@ -1,7 +1,9 @@
+ use crate::overlay::quickselect;
+ use crate::scripting::guiwin::GuiWin;
+ use config::configuration;
+-use config::keyassignment::{InputSelector, InputSelectorEntry, KeyAssignment};
++use config::keyassignment::{
++    InputSelector, InputSelectorEntry, InputSelectorSlider, KeyAssignment,
++};
+ use mux::termwiztermtab::TermWizTerminal;
+ use mux_lua::MuxPane;
+ use nucleo_matcher::pattern::Pattern;
+@@ -9,6 +11,7 @@ use nucleo_matcher::{Matcher, Utf32Str};
+ use rayon::prelude::*;
+ use std::cell::RefCell;
+ use std::rc::Rc;
++use std::sync::{Arc, Mutex};
+ use termwiz::cell::{AttributeChange, CellAttributes};
+ use termwiz::color::ColorAttribute;
+ use termwiz::input::{InputEvent, KeyCode, KeyEvent, Modifiers, MouseButtons, MouseEvent};
+@@ -37,6 +40,46 @@ pub fn matcher_pattern(s: &str) -> Pattern {
+     )
+ }
+ 
++/// Slider changes are reported one at a time: while one is being handled
++/// (the handler may reload the configuration) only the latest value waits.
++#[derive(Default)]
++struct AdjustQueue {
++    busy: bool,
++    pending: Option<(InputSelectorEntry, f64)>,
++}
++
++/// The slider bar and its value (or the name of its step).
++fn slider_text(slider: &InputSelectorSlider) -> String {
++    const WIDTH: usize = 20;
++    let (lo, hi) = (slider.min.min(slider.max), slider.min.max(slider.max));
++    let frac = if hi > lo {
++        ((slider.value - lo) / (hi - lo)).clamp(0.0, 1.0)
++    } else {
++        0.0
++    };
++    let filled = (frac * WIDTH as f64).round() as usize;
++    // segments and dots, as on a DOS screen: rows stay apart
++    let bar = format!(
++        "{}{}",
++        "\u{25a0}".repeat(filled),
++        "\u{00b7}".repeat(WIDTH - filled)
++    );
++    let text = if slider.names.is_empty() {
++        let decimals = if slider.step >= 1.0 {
++            0
++        } else if slider.step >= 0.1 {
++            1
++        } else {
++            2
++        };
++        format!("{:.*}", decimals, slider.value)
++    } else {
++        let idx = ((slider.value - lo) / slider.step.max(1e-9)).round().max(0.0) as usize;
++        slider.names.get(idx).cloned().unwrap_or_default()
++    };
++    format!("{bar} {text}")
++}
++
+ struct SelectorState {
+     active_idx: usize,
+     max_items: usize,
+@@ -51,6 +94,7 @@ struct SelectorState {
+     event_name: String,
+     selection: String,
+     labels: Vec<String>,
++    adjusts: Arc<Mutex<AdjustQueue>>,
+ }
+ 
+ impl SelectorState {
+@@ -125,6 +169,28 @@ impl SelectorState {
+         let input_selector_label_fg = colors.input_selector_label_fg;
+         let input_selector_label_bg = colors.input_selector_label_bg;
+ 
++        // Sliders all start in one column, after the widest label that has
++        // one (the trailing blanks of a label are not drawn, so the bar
++        // cannot simply follow the label).
++        let prefix_width = if self.filtering && self.always_fuzzy {
++            4
++        } else {
++            max_label_len + 3
++        };
++        let slider_col = prefix_width
++            + self
++                .filtered_entries
++                .iter()
++                .filter(|entry| entry.slider.is_some())
++                .map(|entry| {
++                    crate::tabbar::parse_status_text(&entry.label, CellAttributes::default())
++                        .len()
++                })
++                .max()
++                .unwrap_or(0)
++                .min(max_width)
++            + 2;
++
+         for (row_num, (entry_idx, entry)) in self
+             .filtered_entries
+             .iter()
+@@ -183,6 +249,19 @@ impl SelectorState {
+             if entry_idx == self.active_idx {
+                 changes.push(AttributeChange::Reverse(false).into());
+             }
++            // a slider is drawn in normal colors even on the selected row,
++            // so that its filled part reads the same on every row
++            if let Some(slider) = &entry.slider {
++                changes.push(Change::AllAttributes(CellAttributes::default()));
++                changes.push(Change::CursorPosition {
++                    x: Position::Absolute(slider_col),
++                    y: Position::Relative(0),
++                });
++                changes.push(Change::Text(truncate_right(
++                    &slider_text(slider),
++                    max_width.saturating_sub(slider_col),
++                )));
++            }
+             changes.push(Change::AllAttributes(CellAttributes::default()));
+             changes.push(Change::Text("\r\n".to_string()));
+         }
+@@ -216,6 +295,80 @@ impl SelectorState {
+         .detach();
+     }
+ 
++    /// Left/Right on a slider: move it one step (a fifth of one when `fine`)
++    /// and report the new value, the selector stays open.
++    fn adjust(&mut self, direction: f64, fine: bool) {
++        let Some(entry) = self.filtered_entries.get_mut(self.active_idx) else {
++            return;
++        };
++        let Some(slider) = entry.slider.as_mut() else {
++            return;
++        };
++        let step = if fine && slider.names.is_empty() && slider.step < 1.0 {
++            slider.step / 5.0
++        } else {
++            slider.step
++        };
++        if !(step > 0.0) {
++            return;
++        }
++        let (lo, hi) = (slider.min.min(slider.max), slider.min.max(slider.max));
++        let steps = ((slider.value - lo) / step + direction).round();
++        let value = (lo + steps * step).clamp(lo, hi);
++        let value = (value * 1e6).round() / 1e6;
++        if (value - slider.value).abs() < 1e-9 {
++            return;
++        }
++        slider.value = value;
++        let entry = entry.clone();
++        // keep the value when the filter rebuilds the list
++        for choice in self.args.choices.iter_mut() {
++            if choice.id == entry.id && choice.label == entry.label {
++                choice.slider = entry.slider.clone();
++            }
++        }
++        self.trigger_adjust(entry, value);
++    }
++
++    fn trigger_adjust(&self, entry: InputSelectorEntry, value: f64) {
++        {
++            let mut queue = self.adjusts.lock().unwrap();
++            if queue.busy {
++                queue.pending = Some((entry, value));
++                return;
++            }
++            queue.busy = true;
++        }
++        let name = self.event_name.clone();
++        let window = self.window.clone();
++        let pane = self.pane.clone();
++        let adjusts = Arc::clone(&self.adjusts);
++        promise::spawn::spawn_into_main_thread(async move {
++            promise::spawn::spawn(async move {
++                let mut next = Some((entry, value));
++                while let Some((entry, value)) = next.take() {
++                    let (n, w, p) = (name.clone(), window.clone(), pane.clone());
++                    if let Err(err) =
++                        config::with_lua_config_for_event_on_main_thread(&name, move |lua| {
++                            do_event(lua, n, w, p, Some(entry), Some(value))
++                        })
++                        .await
++                    {
++                        log::error!("while processing {} event: {:#}", name, err);
++                    }
++                    let mut queue = adjusts.lock().unwrap();
++                    next = queue.pending.take();
++                    if next.is_none() {
++                        queue.busy = false;
++                    }
++                }
++            })
++            .detach();
++            anyhow::Result::<()>::Ok(())
++        })
++        .detach();
++    }
++
+     fn launch(&self, active_idx: usize) -> bool {
+         if let Some(entry) = self.filtered_entries.get(active_idx).cloned() {
+             self.trigger_event(Some(entry));
+@@ -269,6 +422,18 @@ impl SelectorState {
+                 }) if !self.filtering => {
+                     self.move_up();
+                 }
++                InputEvent::Key(KeyEvent {
++                    key: KeyCode::Char('h'),
++                    ..
++                }) if !self.filtering => {
++                    self.adjust(-1.0, false);
++                }
++                InputEvent::Key(KeyEvent {
++                    key: KeyCode::Char('l'),
++                    ..
++                }) if !self.filtering => {
++                    self.adjust(1.0, false);
++                }
+                 InputEvent::Key(KeyEvent {
+                     key: KeyCode::Char('P' | 'K'),
+                     modifiers: Modifiers::CTRL,
+@@ -330,6 +495,18 @@ impl SelectorState {
+                 }) => {
+                     self.move_down();
+                 }
++                InputEvent::Key(KeyEvent {
++                    key: KeyCode::LeftArrow,
++                    modifiers,
++                }) => {
++                    self.adjust(-1.0, modifiers.contains(Modifiers::SHIFT));
++                }
++                InputEvent::Key(KeyEvent {
++                    key: KeyCode::RightArrow,
++                    modifiers,
++                }) => {
++                    self.adjust(1.0, modifiers.contains(Modifiers::SHIFT));
++                }
+                 InputEvent::Mouse(MouseEvent {
+                     y, mouse_buttons, ..
+                 }) if mouse_buttons.contains(MouseButtons::VERT_WHEEL) => {
+@@ -385,8 +562,11 @@ impl SelectorState {
+ 
+ fn trampoline(name: String, window: GuiWin, pane: MuxPane, entry: Option<InputSelectorEntry>) {
+     promise::spawn::spawn(async move {
+-        config::with_lua_config_on_main_thread(move |lua| do_event(lua, name, window, pane, entry))
+-            .await
++        let event = name.clone();
++        config::with_lua_config_for_event_on_main_thread(&event, move |lua| {
++            do_event(lua, name, window, pane, entry, None)
++        })
++        .await
+     })
+     .detach();
+ }
+@@ -397,12 +577,15 @@ async fn do_event(
+     window: GuiWin,
+     pane: MuxPane,
+     entry: Option<InputSelectorEntry>,
++    value: Option<f64>,
+ ) -> anyhow::Result<()> {
+     if let Some(lua) = lua {
+         let id = entry.as_ref().map(|entry| entry.id.clone());
+         let label = entry.as_ref().map(|entry| entry.label.to_string());
+ 
+-        let args = lua.pack_multi((window, pane, id, label))?;
++        // value: the new slider value when a slider moved (the selector is
++        // still open), nil for a choice or cancel
++        let args = lua.pack_multi((window, pane, id, label, value))?;
+ 
+         if let Err(err) = config::lua::emit_event(&lua, (name.clone(), args)).await {
+             log::error!("while processing {} event: {:#}", name, err);
+@@ -438,6 +621,7 @@ pub fn selector(
+         event_name,
+         selection: String::new(),
+         labels: vec![],
++        adjusts: Arc::new(Mutex::new(AdjustQueue::default())),
+     };
+ 
+     term.set_raw_mode()?;
