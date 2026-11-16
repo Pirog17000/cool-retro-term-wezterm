@@ -1,0 +1,207 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: cool-retro-term-wezterm <build@localhost>
+Date: Mon, 16 Nov 2026 20:38:32 +0100
+Subject: [PATCH 7/7] Live CRT preview for the settings sliders
+
+A configuration reload takes a few hundred milliseconds (every assignment
+to a config_builder builds and converts a whole Config), too slow for a
+slider.  window:set_crt_preview{...} shows CRT values at once: the window
+draws with its configuration's CRT settings plus those values until the
+next configuration reload, which drops them.  All readers of the CRT
+settings in the window go through TermWindow::crt_config().
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ wezterm-gui/src/scripting/guiwin.rs        |  7 ++++
+ wezterm-gui/src/termwindow/mod.rs          | 49 ++++++++++++++++++++++
+ wezterm-gui/src/termwindow/mouseevent.rs   |  2 +-
+ wezterm-gui/src/termwindow/render/draw.rs  | 12 +++---
+ wezterm-gui/src/termwindow/render/paint.rs |  4 +-
+ 5 files changed, 65 insertions(+), 9 deletions(-)
+
+diff --git a/wezterm-gui/src/scripting/guiwin.rs b/wezterm-gui/src/scripting/guiwin.rs
+index 9fe4687..16f9084 100644
+--- a/wezterm-gui/src/scripting/guiwin.rs
++++ b/wezterm-gui/src/scripting/guiwin.rs
+@@ -200,6 +200,13 @@ impl UserData for GuiWin {
+                 .notify(TermWindowNotif::SetConfigOverrides(value));
+             Ok(())
+         });
++        // CRT effect values shown at once (settings sliders), see
++        // TermWindowNotif::SetCrtPreview
++        methods.add_method("set_crt_preview", |_, this, value: mlua::Value| {
++            let value = lua_value_to_dynamic(value)?;
++            this.window.notify(TermWindowNotif::SetCrtPreview(value));
++            Ok(())
++        });
+         methods.add_async_method("is_focused", |_, this, _: ()| async move {
+             let (tx, rx) = smol::channel::bounded(1);
+             this.window
+diff --git a/wezterm-gui/src/termwindow/mod.rs b/wezterm-gui/src/termwindow/mod.rs
+index d633ddf..7dbe074 100644
+--- a/wezterm-gui/src/termwindow/mod.rs
++++ b/wezterm-gui/src/termwindow/mod.rs
+@@ -137,6 +137,10 @@ pub enum TermWindowNotif {
+     },
+     GetConfigOverrides(Sender<wezterm_dynamic::Value>),
+     SetConfigOverrides(wezterm_dynamic::Value),
++    /// CRT effect values (a table of config.crt fields) shown at once while
++    /// a settings slider moves, without reloading the configuration; the
++    /// next configuration reload drops them.  nil / {} ends the preview.
++    SetCrtPreview(wezterm_dynamic::Value),
+     CancelOverlayForPane(PaneId),
+     CancelOverlayForTab {
+         tab_id: TabId,
+@@ -457,6 +461,8 @@ pub struct TermWindow {
+     /// cool-retro-term CRT post-processing state (OpenGL front end)
+     crt: RefCell<Option<crate::crt::CrtRenderer>>,
+     crt_failed: std::cell::Cell<bool>,
++    /// see TermWindowNotif::SetCrtPreview
++    crt_preview: Option<config::CrtConfig>,
+     /// Full screen + CRT: the auto-hidden tab bar is currently shown.
+     crt_bar_revealed: std::cell::Cell<bool>,
+     /// Mouse position in window pixels and the cursor shown there, for the
+@@ -693,6 +699,7 @@ impl TermWindow {
+         let myself = Self {
+             crt: RefCell::new(None),
+             crt_failed: std::cell::Cell::new(false),
++            crt_preview: None,
+             crt_bar_revealed: std::cell::Cell::new(false),
+             crt_pointer: std::cell::Cell::new(None),
+             crt_cursor_icon: std::cell::Cell::new(None),
+@@ -1207,6 +1214,12 @@ impl TermWindow {
+                     self.config_was_reloaded();
+                 }
+             }
++            TermWindowNotif::SetCrtPreview(value) => {
++                self.crt_preview = crt_preview_config(&self.config.crt, value);
++                if let Some(window) = self.window.as_ref() {
++                    window.invalidate();
++                }
++            }
+             TermWindowNotif::CancelOverlayForPane(pane_id) => {
+                 self.cancel_overlay_for_pane(pane_id);
+             }
+@@ -1738,7 +1751,15 @@ impl TermWindow {
+         self.palette.as_ref().unwrap()
+     }
+ 
++    /// The CRT settings in effect: the configuration's, or the values of a
++    /// settings slider being moved (TermWindowNotif::SetCrtPreview).
++    pub fn crt_config(&self) -> &config::CrtConfig {
++        self.crt_preview.as_ref().unwrap_or(&self.config.crt)
++    }
++
+     pub fn config_was_reloaded(&mut self) {
++        // the reloaded configuration has the values that were previewed
++        self.crt_preview = None;
+         log::debug!(
+             "config was reloaded, overrides: {:?}",
+             self.config_overrides
+@@ -3651,3 +3672,31 @@ impl Drop for TermWindow {
+         }
+     }
+ }
++
++/// `base` with the fields of a CRT preview applied on top (see
++/// TermWindowNotif::SetCrtPreview); None for nil, {} or values that do not fit.
++fn crt_preview_config(
++    base: &config::CrtConfig,
++    preview: wezterm_dynamic::Value,
++) -> Option<config::CrtConfig> {
++    use wezterm_dynamic::{FromDynamic, FromDynamicOptions, ToDynamic, Value};
++    let Value::Object(preview) = preview else {
++        return None;
++    };
++    if preview.is_empty() {
++        return None;
++    }
++    let Value::Object(mut merged) = base.to_dynamic() else {
++        return None;
++    };
++    for (key, value) in preview.iter() {
++        merged.insert(key.clone(), value.clone());
++    }
++    match config::CrtConfig::from_dynamic(&Value::Object(merged), FromDynamicOptions::default()) {
++        Ok(crt) => Some(crt),
++        Err(err) => {
++            log::warn!("CRT preview ignored: {err}");
++            None
++        }
++    }
++}
+diff --git a/wezterm-gui/src/termwindow/mouseevent.rs b/wezterm-gui/src/termwindow/mouseevent.rs
+index 8f59057..03534a8 100644
+--- a/wezterm-gui/src/termwindow/mouseevent.rs
++++ b/wezterm-gui/src/termwindow/mouseevent.rs
+@@ -65,7 +65,7 @@ impl super::TermWindow {
+         // the pointer reflection follows the mouse
+         self.crt_pointer
+             .set(Some((event.coords.x as f32, event.coords.y as f32)));
+-        if self.config.crt.enabled && self.config.crt.resolve().pointer_reflection > 0.0 {
++        if self.crt_config().enabled && self.crt_config().resolve().pointer_reflection > 0.0 {
+             context.invalidate();
+         }
+         let event = self.crt_map_mouse_event(event);
+diff --git a/wezterm-gui/src/termwindow/render/draw.rs b/wezterm-gui/src/termwindow/render/draw.rs
+index 4e61334..1a46fb2 100644
+--- a/wezterm-gui/src/termwindow/render/draw.rs
++++ b/wezterm-gui/src/termwindow/render/draw.rs
+@@ -152,8 +152,8 @@ impl crate::TermWindow {
+     fn call_draw_glium(&mut self, frame: &mut glium::Frame) -> anyhow::Result<()> {
+         // cool-retro-term CRT post-processing: render the terminal into an
+         // offscreen scene texture, then run the CRT passes into the window.
+-        if self.config.crt.enabled {
+-            let params = self.config.crt.resolve();
++        if self.crt_config().enabled {
++            let params = self.crt_config().resolve();
+             let ctx = match &self.render_state.as_ref().unwrap().context {
+                 crate::renderstate::RenderContext::Glium(ctx) => std::rc::Rc::clone(ctx),
+                 _ => unreachable!(),
+@@ -201,8 +201,8 @@ impl crate::TermWindow {
+     /// CRT + full screen + `crt.fullscreen_autohide_tab_bar`: the tab bar is
+     /// hidden (panes use the whole screen) until the mouse reaches the edge.
+     pub fn crt_fullscreen_autohide(&self) -> bool {
+-        self.config.crt.enabled
+-            && self.config.crt.fullscreen_autohide_tab_bar
++        self.crt_config().enabled
++            && self.crt_config().fullscreen_autohide_tab_bar
+             && self.config.enable_tab_bar
+             && self.config.use_fancy_tab_bar
+             && !self.crt_failed.get()
+@@ -311,7 +311,7 @@ impl crate::TermWindow {
+ 
+     /// The CRT screen rect when the CRT effects are actually being drawn.
+     pub fn crt_screen_rect(&self) -> Option<crate::crt::ScreenRect> {
+-        if !self.config.crt.enabled || self.crt_failed.get() {
++        if !self.crt_config().enabled || self.crt_failed.get() {
+             return None;
+         }
+         match self.render_state.as_ref().map(|s| &s.context) {
+@@ -336,7 +336,7 @@ impl crate::TermWindow {
+                 }
+             };
+             if rect.contains(mx, my) && !over_overlay_bar {
+-                let params = self.config.crt.resolve();
++                let params = self.crt_config().resolve();
+                 let tc = ((mx - rect.x) / rect.w, (my - rect.y) / rect.h);
+                 let (u, v) = crate::crt::distort_point(&params, &rect, tc);
+                 let u = u.clamp(0.0, 0.9999);
+diff --git a/wezterm-gui/src/termwindow/render/paint.rs b/wezterm-gui/src/termwindow/render/paint.rs
+index d554754..d270661 100644
+--- a/wezterm-gui/src/termwindow/render/paint.rs
++++ b/wezterm-gui/src/termwindow/render/paint.rs
+@@ -110,11 +110,11 @@ impl crate::TermWindow {
+ 
+         // The CRT effects (noise, flicker, glowing line, burn-in decay) are
+         // animated: keep repainting at the configured effects frame rate.
+-        let crt_animating = self.config.crt.enabled
++        let crt_animating = self.crt_config().enabled
+             && matches!(frame, RenderFrame::Glium(_))
+             && !self.crt_failed.get();
+         if crt_animating {
+-            let fps = self.config.crt.fps.clamp(1, 120) as f32;
++            let fps = self.crt_config().fps.clamp(1, 120) as f32;
+             let next = Instant::now() + Duration::from_secs_f32(1.0 / fps);
+             let mut anim = self.has_animation.borrow_mut();
+             match *anim {

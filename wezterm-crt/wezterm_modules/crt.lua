@@ -104,15 +104,19 @@ function M.load_state()
   return {}
 end
 
-function M.save_state(t)
+local function write_state(t)
   local f, err = io.open(M.state_path, 'w')
   if not f then
     wezterm.log_error('crt: cannot write ' .. M.state_path .. ': ' .. tostring(err))
-    return
+    return false
   end
   f:write(wezterm.json_encode(t))
   f:close()
-  wezterm.reload_configuration()
+  return true
+end
+
+function M.save_state(t)
+  if write_state(t) then wezterm.reload_configuration() end
 end
 
 local function update_state(fn)
@@ -378,10 +382,37 @@ local function phosphor_menu(window, pane)
   end, function(w, p2) effects_menu(w, p2) end)
 end
 
+-- Swatches of the terminal palette.  The menu is drawn on the CRT screen,
+-- so they show how the effects (chroma, saturation, contrast, phosphor ...)
+-- change the colors while the sliders move.
+local NORMAL_COLORS = { 'Black', 'Maroon', 'Green', 'Olive', 'Navy', 'Purple', 'Teal', 'Silver' }
+local BRIGHT_COLORS = { 'Grey', 'Red', 'Lime', 'Yellow', 'Blue', 'Fuchsia', 'Aqua', 'White' }
+
+-- One row (two rows of blocks would touch and merge): normal, then bright.
+local function swatches()
+  local items = { { Text = string.format('%-19s ', 'Colors') } }
+  for i, names in ipairs { NORMAL_COLORS, BRIGHT_COLORS } do
+    if i > 1 then table.insert(items, { Text = ' ' }) end
+    for _, n in ipairs(names) do
+      table.insert(items, { Foreground = { AnsiColor = n } })
+      table.insert(items, { Text = '\u{2588}\u{2588} ' })
+    end
+  end
+  table.insert(items, 'ResetAttributes')
+  return wezterm.format(items)
+end
+
+-- The phosphor color as the screen shows it: the shader tints everything
+-- with the phosphor, so a white square comes out exactly in that color.
+local function phosphor_square()
+  return wezterm.format { { Foreground = { Color = '#ffffff' } }, { Text = '\u{2588}\u{2588}' }, 'ResetAttributes' }
+end
+
 effects_menu = function(window, pane)
   local _, _, eff = current(window)
   local choices = {
     { id = '__toggle', label = string.format('%-19s %s', 'CRT effects', eff.enabled and 'ON   (turn off)' or 'OFF  (turn on)') },
+    { id = '__colors', label = swatches() },
   }
   for _, e in ipairs(M.effects) do
     table.insert(choices, {
@@ -399,7 +430,7 @@ effects_menu = function(window, pane)
   })
   table.insert(choices, {
     id = '__phosphor',
-    label = string.format('%-19s %s', 'Phosphor color', tostring(eff.font_color)),
+    label = string.format('%-19s %s  ', 'Phosphor color', tostring(eff.font_color)) .. phosphor_square(),
   })
   table.insert(choices, {
     id = '__reset',
@@ -415,19 +446,27 @@ effects_menu = function(window, pane)
       return effects_menu(w, p)
     end
     if id == '__raster' then return rasterization_menu(w, p) end
+    if id == '__colors' then return effects_menu(w, p) end -- swatches: nothing to pick
     if id == '__phosphor' then return phosphor_menu(w, p) end
     for _, e in ipairs(M.effects) do
       if e[1] == id then return value_menu(w, p, e[1], e[2]) end
     end
-  end, menu, function(_w, _p, id, value)
-    -- a slider moved: save and apply it, the menu stays open
-    update_state(function(s)
-      if id == '__raster' then
-        s.rasterization = math.floor(value + 0.5)
-      else
-        s[id] = value
-      end
-    end)
+  end, menu, function(w, _p, id, value)
+    -- A slider moved: shown at once in this window (no configuration reload
+    -- per step, that takes too long), and saved; the file watcher reloads
+    -- the configuration, for all windows, once the slider rests.
+    local s = M.load_state()
+    if id == '__raster' then
+      s.rasterization = math.floor(value + 0.5)
+    else
+      s[id] = value
+    end
+    write_state(s)
+    local preview = {}
+    for k, v in pairs(s) do
+      if not LOCAL_KEYS[k] then preview[k] = v end
+    end
+    w:set_crt_preview(preview)
   end)
 end
 

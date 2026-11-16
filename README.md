@@ -73,9 +73,15 @@ saved in `crt_state.json` next to the exe and applied to all windows at once.
 In **CRT effects** every value is a slider: Left/Right (or h/l) move it in
 steps of 0.05, Shift+Left/Right in steps of 0.01, and the change shows on the
 screen right away while the menu stays open; Enter still opens the list of
-values with the profile default.  (wezterm's `InputSelector` gets an optional
-`slider = { value, min, max, step, names }` per choice for this, reported to
-the action callback as a fifth argument.)
+values with the profile default.  A **Colors** row shows the 16 terminal
+colors through the CRT, so you can see how chroma, saturation, contrast or
+the phosphor change them, and **Phosphor color** has a square in the color
+the screen gives it.  (wezterm gets an optional
+`slider = { value, min, max, step, names }` per `InputSelector` choice,
+reported to the action callback as a fifth argument, and
+`window:set_crt_preview{...}`, which shows CRT values at once without a
+configuration reload; the saved values are picked up by all windows when the
+slider rests.)
 
 **Settings** lists every wezterm setting (219 options; the structured ones
 such as `window_padding`, `window_frame` and `colors` are split into their
