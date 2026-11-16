@@ -16,6 +16,70 @@
 #include "conpty.h"
 
 #include <QDebug>
+#include <QCoreApplication>
+#include <QDir>
+#include <QFileInfo>
+
+namespace {
+
+// ConPTY entry points.  Like wezterm, prefer a side-loaded conpty.dll (+
+// OpenConsole.exe) shipped next to the executable: it is a much newer
+// console host than the one built into Windows 10 and handles modern VT
+// output, resize reflow and input far better.  Falls back to kernel32.
+typedef HRESULT (WINAPI *PFN_CreatePseudoConsole)(COORD, HANDLE, HANDLE, DWORD, HPCON*);
+typedef HRESULT (WINAPI *PFN_ResizePseudoConsole)(HPCON, COORD);
+typedef void (WINAPI *PFN_ClosePseudoConsole)(HPCON);
+
+constexpr DWORD kPseudoconsoleResizeQuirk = 0x2;
+constexpr DWORD kPseudoconsolePassthroughMode = 0x8;
+
+struct ConPtyApi {
+    PFN_CreatePseudoConsole create = nullptr;
+    PFN_ResizePseudoConsole resize = nullptr;
+    PFN_ClosePseudoConsole close = nullptr;
+    DWORD flags = 0;
+    bool sideloaded = false;
+};
+
+bool loadFrom(HMODULE mod, ConPtyApi& api)
+{
+    if (!mod)
+        return false;
+    api.create = reinterpret_cast<PFN_CreatePseudoConsole>(GetProcAddress(mod, "CreatePseudoConsole"));
+    api.resize = reinterpret_cast<PFN_ResizePseudoConsole>(GetProcAddress(mod, "ResizePseudoConsole"));
+    api.close = reinterpret_cast<PFN_ClosePseudoConsole>(GetProcAddress(mod, "ClosePseudoConsole"));
+    return api.create && api.resize && api.close;
+}
+
+const ConPtyApi& conptyApi()
+{
+    static const ConPtyApi api = [] {
+        ConPtyApi a;
+        const bool forceInbox = qEnvironmentVariableIntValue("CRT_CONPTY_INBOX") != 0;
+        const QString dir = QCoreApplication::applicationDirPath();
+        const QString dll = QDir::toNativeSeparators(dir + QStringLiteral("/conpty.dll"));
+        const bool haveHost = QFileInfo::exists(dir + QStringLiteral("/OpenConsole.exe"));
+        if (!forceInbox && haveHost && QFileInfo::exists(dll)) {
+            HMODULE mod = LoadLibraryExW(reinterpret_cast<LPCWSTR>(dll.utf16()), nullptr,
+                                         LOAD_WITH_ALTERED_SEARCH_PATH);
+            if (loadFrom(mod, a)) {
+                a.sideloaded = true;
+                a.flags = kPseudoconsoleResizeQuirk;
+                if (qEnvironmentVariableIntValue("CRT_CONPTY_PASSTHROUGH") != 0)
+                    a.flags |= kPseudoconsolePassthroughMode;
+                qDebug() << "ConPty: using side-loaded conpty.dll from" << dir;
+                return a;
+            }
+            a = ConPtyApi();
+        }
+        if (!loadFrom(GetModuleHandleW(L"kernel32.dll"), a))
+            qWarning() << "ConPty: this system does not support ConPTY";
+        return a;
+    }();
+    return api;
+}
+
+} // namespace
 
 ConPty::ConPty()
     : m_hPC(INVALID_HANDLE_VALUE)
@@ -62,7 +126,9 @@ bool ConPty::create(int cols, int rows)
     size.X = static_cast<SHORT>(cols);
     size.Y = static_cast<SHORT>(rows);
 
-    HRESULT hr = CreatePseudoConsole(size, hPipeInRead, hPipeOutWrite, 0, &m_hPC);
+    const ConPtyApi& api = conptyApi();
+    HRESULT hr = api.create ? api.create(size, hPipeInRead, hPipeOutWrite, api.flags, &m_hPC)
+                            : E_NOTIMPL;
 
     if (FAILED(hr)) {
         qWarning() << "ConPty::create() - CreatePseudoConsole failed, hr:" << Qt::hex << hr;
@@ -88,7 +154,8 @@ bool ConPty::create(int cols, int rows)
 void ConPty::close()
 {
     if (m_hPC != INVALID_HANDLE_VALUE) {
-        ClosePseudoConsole(m_hPC);
+        if (conptyApi().close)
+            conptyApi().close(m_hPC);
         m_hPC = INVALID_HANDLE_VALUE;
     }
 
@@ -124,7 +191,7 @@ bool ConPty::resize(int rows, int cols)
     size.X = static_cast<SHORT>(cols);
     size.Y = static_cast<SHORT>(rows);
 
-    HRESULT hr = ResizePseudoConsole(m_hPC, size);
+    HRESULT hr = conptyApi().resize ? conptyApi().resize(m_hPC, size) : E_NOTIMPL;
     if (FAILED(hr)) {
         qWarning() << "ConPty::resize() - ResizePseudoConsole failed, hr:" << Qt::hex << hr;
         return false;

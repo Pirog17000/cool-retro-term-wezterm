@@ -131,6 +131,10 @@ endforeach()
 
 add_custom_target(compile_shaders ALL DEPENDS ${COMPILED_QSB_FILES})
 
+if(WIN32)
+    list(APPEND APP_SOURCES cool-retro-term.rc)
+endif()
+
 add_executable(cool-retro-term WIN32 ${APP_SOURCES} ${APP_HEADERS})
 add_dependencies(cool-retro-term compile_shaders qmltermwidget_assets)
 
@@ -156,6 +160,15 @@ target_link_libraries(cool-retro-term PRIVATE
 if(WIN32)
     target_compile_definitions(cool-retro-term PRIVATE _WIN32_WINNT=0x0A00 NTDDI_VERSION=0x0A000006)
     target_link_libraries(cool-retro-term PRIVATE advapi32)
+
+    # Ship the wezterm core and wezterm's bundled ConPTY host next to the exe.
+    set(WEZTERM_CONHOST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/wezterm/assets/windows/conhost")
+    add_custom_command(TARGET cool-retro-term POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:wezbridge>" "$<TARGET_FILE_DIR:cool-retro-term>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${WEZTERM_CONHOST_DIR}/conpty.dll" "$<TARGET_FILE_DIR:cool-retro-term>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${WEZTERM_CONHOST_DIR}/OpenConsole.exe" "$<TARGET_FILE_DIR:cool-retro-term>"
+        COMMENT "Copying wezbridge and wezterm ConPTY host next to the executable"
+    )
 endif()
 
 if(UNIX AND NOT APPLE)

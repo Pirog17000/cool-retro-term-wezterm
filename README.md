@@ -4,6 +4,24 @@
 |---|---|---|
 |![Default Amber Cool Retro Term](https://user-images.githubusercontent.com/121322/32070717-16708784-ba42-11e7-8572-a8fcc10d7f7d.gif)|![IBM DOS](https://user-images.githubusercontent.com/121322/32070716-16567e5c-ba42-11e7-9e64-ba96dfe9b64d.gif)|![Default Green Cool Retro Term](https://user-images.githubusercontent.com/121322/32070715-163a1c94-ba42-11e7-80bb-41fbf10fc634.gif)|
 
+## WezTerm core (this fork)
+
+This fork replaces Konsole's `Vt102Emulation` with the **wezterm-term** emulation core
+from [WezTerm](https://github.com/wezterm/wezterm) (git submodule `third_party/wezterm`):
+
+- `wezbridge/` — Rust cdylib exposing wezterm-term through a C ABI (`wezbridge.h`).
+- `qmltermwidget/lib/WezEmulation.*` — feeds pty output into wezterm, mirrors its screen,
+  cursor and scrollback into Konsole's `Screen` (so the CRT renderer, selection and
+  scrollbar are unchanged), and routes keys / mouse / paste through wezterm's encoders.
+- ConPTY: wezterm's bundled `conpty.dll` + `OpenConsole.exe` are side-loaded when present
+  next to the exe (much newer than the Windows 10 inbox ConPTY).
+
+Environment switches: `CRT_EMULATION=konsole` (legacy emulation), `CRT_CONPTY_INBOX=1`
+(system ConPTY), `CRT_CONPTY_PASSTHROUGH=1` (experimental ConPTY passthrough).
+
+Build: Rust (stable, msvc), Qt 6.8 msvc2022_64, VS 2022, then
+`powershell -ExecutionPolicy Bypass -File build_wezterm.ps1 [-QtDir ...] [-Zip]` → `dist\`.
+
 ## Description
 cool-retro-term is a terminal emulator which mimics the look and feel of the old cathode tube screens.
 It has been designed to be eye-candy, customizable, and reasonably lightweight.

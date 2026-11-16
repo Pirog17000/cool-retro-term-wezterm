@@ -46,6 +46,7 @@
 #include "TerminalDisplay.h"
 #include "ShellCommand.h"
 #include "Vt102Emulation.h"
+#include "WezEmulation.h"
 
 // QMLTermWidget
 #include <QQuickWindow>
@@ -93,7 +94,19 @@ Session::Session(QObject* parent) :
 #endif
 
     //create emulation backend
-    _emulation = new Vt102Emulation();
+    // Terminal emulation core: wezterm-term (via wezbridge) by default.
+    // Set CRT_EMULATION=konsole to fall back to the legacy Konsole Vt102 emulation.
+    if (qEnvironmentVariable("CRT_EMULATION").compare(QLatin1String("konsole"), Qt::CaseInsensitive) == 0) {
+        _emulation = new Vt102Emulation();
+    } else {
+        auto *wez = new WezEmulation();
+        if (wez->isValid()) {
+            _emulation = wez;
+        } else {
+            delete wez;
+            _emulation = new Vt102Emulation();
+        }
+    }
 
     connect( _emulation, SIGNAL( titleChanged( int, const QString & ) ),
              this, SLOT( setUserTitle( int, const QString & ) ) );
@@ -110,7 +123,7 @@ Session::Session(QObject* parent) :
             this, SLOT(onEmulationSizeChange(QSize)));
     connect(_emulation, SIGNAL(imageSizeChanged(int, int)),
             this, SLOT(onViewSizeChange(int, int)));
-    connect(_emulation, &Vt102Emulation::cursorChanged,
+    connect(_emulation, &Emulation::cursorChanged,
             this, &Session::cursorChanged);
 
     //connect teletype to emulation backend

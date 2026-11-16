@@ -1,3 +1,7 @@
 [submodule "KDSingleApplication"]
 	path = KDSingleApplication
 	url = https://github.com/KDAB/KDSingleApplication.git
+[submodule "third_party/wezterm"]
+	path = third_party/wezterm
+	url = https://github.com/wezterm/wezterm.git
+	shallow = true

@@ -1,0 +1,23 @@
+[package]
+name = "wezbridge"
+version = "0.1.0"
+edition = "2021"
+description = "C ABI bridge exposing the wezterm-term emulation core to cool-retro-term (qmltermwidget)"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wezterm-term = { path = "../third_party/wezterm/term" }
+termwiz = { path = "../third_party/wezterm/termwiz" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+debug = false
+
+# Keep this crate out of the wezterm workspace.
+[workspace]

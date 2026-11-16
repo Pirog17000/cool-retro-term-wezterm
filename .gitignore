@@ -80,3 +80,9 @@ aqtinstall.log
 !deploy/
 !deploy/**
 deploy/*.log
+
+# wezterm fork build outputs
+/dist/
+/build/
+wezbridge/target/
+cool-retro-term-debug.log

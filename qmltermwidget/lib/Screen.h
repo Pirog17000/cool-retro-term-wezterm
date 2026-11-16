@@ -561,6 +561,16 @@ public:
       */
     static void fillWithDefaultChar(Character* dest, int count);
 
+    /**
+     * External model mirroring, used when an alternative emulation core
+     * (WezEmulation / wezterm-term) owns the terminal state and Konsole's
+     * Screen is only used as the display/selection/history model.
+     */
+    void setExternalLine(int y, const QVector<Character>& line, bool wrapped);
+    void addExternalHistoryLine(const QVector<Character>& line, bool wrapped);
+    void clearExternalHistory();
+    void setExternalCursor(int x, int y);
+
     QSet<uint> usedExtendedChars() const
     {
         QSet<uint> result;
@@ -617,6 +627,7 @@ private:
     void scrollDown(int from, int i);
 
     void addHistLine();
+    void addHistLineFrom(const QVector<Character>& line, LineProperty property);
 
     void initTabStops();
 

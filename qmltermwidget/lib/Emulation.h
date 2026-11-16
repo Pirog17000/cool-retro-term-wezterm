@@ -277,7 +277,7 @@ public slots:
    * @param buffer A string of characters received from the terminal program.
    * @param len The length of @p buffer
    */
-  void receiveData(const char* buffer,int len);
+  virtual void receiveData(const char* buffer,int len);
 
 signals:
 
@@ -449,6 +449,11 @@ protected:
    * @p ch A unicode character code.
    */
   virtual void receiveChar(wchar_t ch);
+
+  /** Called right before the bulk update is pushed to the views.
+   *  Alternative emulation backends (WezEmulation) use it to mirror their
+   *  model into the Konsole screens. */
+  virtual void prepareBulkUpdate() {}
 
   /**
    * Sets the active screen.  The terminal has two screens, primary and alternate.

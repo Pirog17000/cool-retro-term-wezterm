@@ -1446,6 +1446,11 @@ void Screen::writeLinesToStream(TerminalCharacterDecoder* decoder, int fromLine,
 
 void Screen::addHistLine()
 {
+    addHistLineFrom(screenLines[0], lineProperties[0]);
+}
+
+void Screen::addHistLineFrom(const ImageLine& line, LineProperty property)
+{
     // add line to history buffer
     // we have to take care about scrolling, too...
 
@@ -1453,8 +1458,8 @@ void Screen::addHistLine()
     {
         int oldHistLines = history->getLines();
 
-        history->addCellsVector(screenLines[0]);
-        history->addLine( lineProperties[0] & LINE_WRAPPED );
+        history->addCellsVector(line);
+        history->addLine( property & LINE_WRAPPED );
 
         int newHistLines = history->getLines();
 
@@ -1543,4 +1548,34 @@ void Screen::fillWithDefaultChar(Character* dest, int count)
 {
     for (int i=0;i<count;i++)
         dest[i] = defaultChar;
+}
+
+// ---------------------------------------------------------------------------
+// External model mirroring (used by WezEmulation)
+
+void Screen::setExternalLine(int y, const QVector<Character>& line, bool wrapped)
+{
+    if (y < 0 || y >= lines)
+        return;
+    ImageLine& dest = screenLines[y];
+    dest = line;
+    if (dest.size() > columns)
+        dest.resize(columns);
+    lineProperties[y] = wrapped ? LINE_WRAPPED : LINE_DEFAULT;
+}
+
+void Screen::addExternalHistoryLine(const QVector<Character>& line, bool wrapped)
+{
+    addHistLineFrom(line, wrapped ? LINE_WRAPPED : LINE_DEFAULT);
+}
+
+void Screen::clearExternalHistory()
+{
+    setScroll(getScroll(), false);
+}
+
+void Screen::setExternalCursor(int x, int y)
+{
+    cuX = qMax(0, qMin(columns - 1, x));
+    cuY = qMax(0, qMin(lines - 1, y));
 }

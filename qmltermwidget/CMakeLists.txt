@@ -25,6 +25,7 @@ set(QMLTERMWIDGET_SOURCES
     lib/TerminalDisplay.cpp
     lib/tools.cpp
     lib/Vt102Emulation.cpp
+    lib/WezEmulation.cpp
     lib/ksession.cpp
     lib/kprocess.cpp
     src/qmltermwidget_plugin.cpp
@@ -55,6 +56,7 @@ set(QMLTERMWIDGET_HEADERS
     lib/TerminalDisplay.h
     lib/tools.h
     lib/Vt102Emulation.h
+    lib/WezEmulation.h
     lib/mac-vkcode.h
     lib/ksession.h
     lib/ringbuffer.h
@@ -104,6 +106,13 @@ target_include_directories(qmltermwidget PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/lib
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
+
+# wezterm-term emulation core (Rust cdylib, imported by the top-level CMakeLists.txt)
+if(TARGET wezbridge)
+    target_link_libraries(qmltermwidget PRIVATE wezbridge)
+else()
+    message(FATAL_ERROR "wezbridge target missing: configure from the top-level CMakeLists.txt")
+endif()
 
 target_link_libraries(qmltermwidget PRIVATE
     Qt6::Core

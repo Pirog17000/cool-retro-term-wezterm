@@ -109,7 +109,7 @@ Konsole::Session *KSession::createSession(QString name)
     session->setAutoClose(true);
 
     session->setFlowControlEnabled(true);
-    session->setHistoryType(HistoryTypeBuffer(1000));
+    session->setHistoryType(HistoryTypeBuffer(10000));
 
     session->setDarkBackground(true);
 

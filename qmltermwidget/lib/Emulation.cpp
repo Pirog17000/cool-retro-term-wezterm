@@ -323,6 +323,8 @@ void Emulation::showBulk()
     _bulkTimer1.stop();
     _bulkTimer2.stop();
 
+    prepareBulkUpdate();
+
     emit outputChanged();
 
     _currentScreen->resetScrolledLines();
