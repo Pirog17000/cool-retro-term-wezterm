@@ -86,3 +86,5 @@ deploy/*.log
 /build/
 wezbridge/target/
 cool-retro-term-debug.log
+/dist-wezterm/
+*.zip
