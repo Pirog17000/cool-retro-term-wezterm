@@ -89,3 +89,5 @@ cool-retro-term-debug.log
 /dist-wezterm/
 *.zip
 /dist-wezterm/crt_state.json
+/build.local.ps1
+*.zip.sha256

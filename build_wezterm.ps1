@@ -10,7 +10,9 @@
     powershell -ExecutionPolicy Bypass -File build_wezterm.ps1 -QtDir D:\Qt\6.8.3\msvc2022_64 -Zip
 #>
 param(
-    [string]$QtDir = $(if ($env:QTDIR) { $env:QTDIR } else { 'C:\Qt\6.8.3\msvc2022_64' }),
+    # Qt for MSVC 2022; also from $env:QTDIR, build.local.ps1 ($QtDir = '...'),
+    # qmake on PATH or the newest C:\Qt\6.*\msvc2022_64
+    [string]$QtDir = '',
     [string]$BuildDir = 'build',
     [string]$DistDir = 'dist',
     [switch]$Zip
@@ -22,8 +24,19 @@ Set-Location $root
 
 function Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 
-if (-not (Test-Path "$QtDir\bin\windeployqt.exe")) {
-    throw "Qt not found at '$QtDir' (pass -QtDir or set QTDIR)"
+# Machine specific settings (not tracked by git)
+if (Test-Path "$root\build.local.ps1") { $cliQtDir = $QtDir; . "$root\build.local.ps1"; if ($cliQtDir) { $QtDir = $cliQtDir } }
+if (-not $QtDir -and $env:QTDIR) { $QtDir = $env:QTDIR }
+if (-not $QtDir) {
+    $qmake = Get-Command qmake.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($qmake) { $QtDir = Split-Path (Split-Path $qmake.Source) }
+}
+if (-not $QtDir) {
+    $QtDir = Get-ChildItem 'C:\Qt\6.*\msvc2022_64' -Directory -ErrorAction SilentlyContinue |
+        Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+}
+if (-not $QtDir -or -not (Test-Path "$QtDir\bin\windeployqt.exe")) {
+    throw "Qt not found (pass -QtDir, set QTDIR or put `$QtDir into build.local.ps1)"
 }
 $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
 if (Test-Path $cargoBin) { $env:PATH = "$cargoBin;$env:PATH" }

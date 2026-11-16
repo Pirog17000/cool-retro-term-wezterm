@@ -1,0 +1,103 @@
+name: Build cool-retro-term-wezterm
+
+# Builds wezterm with the cool-retro-term CRT patches and publishes it as a
+# GitHub release, which Settings > Update in the app installs.
+#
+# - push a tag crt-*  (Settings > Update > "Build a new version" creates one
+#   on the release branch): builds the latest wezterm main, i.e. what the
+#   wezterm nightly builds use
+# - Run workflow (needs this file on the default branch): choose the wezterm
+#   ref; empty builds the commit pinned in third_party/wezterm
+#
+# Only the built-in GITHUB_TOKEN is used.
+
+on:
+  push:
+    tags: ['crt-*']
+  workflow_dispatch:
+    inputs:
+      wezterm_ref:
+        description: 'wezterm ref to build on (main = latest nightly, empty = pinned commit)'
+        required: false
+        default: 'main'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-wezterm-crt
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 180
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Release tag and wezterm ref
+        id: meta
+        shell: pwsh
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_REF: ${{ inputs.wezterm_ref }}
+        run: |
+          if ($env:REF_TYPE -eq 'tag') {
+            $tag = $env:REF_NAME
+            $ref = 'main'
+          } else {
+            $tag = 'crt-' + (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmm')
+            $ref = $env:INPUT_REF
+          }
+          if ($tag -notmatch '^crt-[A-Za-z0-9._-]+$') { throw "unexpected tag name $tag" }
+          if ($ref -and $ref -notmatch '^[A-Za-z0-9._/-]+$') { throw "unexpected wezterm ref $ref" }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "ref=$ref" >> $env:GITHUB_OUTPUT
+
+      - name: wezterm sources
+        run: git submodule update --init --depth 1 third_party/wezterm
+
+      - name: Rust
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: 'third_party/wezterm -> ../../build/wezterm-target'
+          cache-on-failure: true
+
+      - name: Build
+        shell: pwsh
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          WEZTERM_REF: ${{ steps.meta.outputs.ref }}
+        run: ./build_wezterm_crt.ps1 -PerlDir 'C:\Strawberry\perl\bin' -WeztermRef "$env:WEZTERM_REF" -Version "$env:TAG" -Zip
+
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          $info = Get-Content dist-wezterm/build_info.json -Raw | ConvertFrom-Json
+          $notes = @(
+            "cool-retro-term CRT look on top of wezterm.",
+            "",
+            "- wezterm core: https://github.com/wezterm/wezterm/commit/$($info.wezterm_commit) ($($info.wezterm_date))",
+            "- CRT patches: https://github.com/$env:REPO/commit/$env:SHA",
+            "- built: $($info.built)",
+            "",
+            "Install: unpack the zip anywhere and run wezterm-gui.exe, or use Settings > Update in the app.",
+            "Check: the .sha256 file holds the SHA-256 of the zip."
+          ) -join "`n"
+          Set-Content release-notes.md $notes -Encoding utf8
+          gh release create "$env:TAG" cool-retro-term-wezterm-win64.zip cool-retro-term-wezterm-win64.zip.sha256 dist-wezterm/build_info.json `
+            --repo "$env:REPO" --target "$env:SHA" --title "cool-retro-term-wezterm $env:TAG" --notes-file release-notes.md

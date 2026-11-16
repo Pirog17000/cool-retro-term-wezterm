@@ -12,6 +12,7 @@ local wezterm = require 'wezterm'
 local act = wezterm.action
 local data = require 'crt_data'
 local options = require 'options' -- every other wezterm option, see options.lua
+local update = require 'update' -- Settings > Update, see update.lua
 
 local M = {}
 M.fonts = data.fonts
@@ -412,6 +413,7 @@ menu = function(window, pane)
       local n = options.changed()
       return n > 0 and (n .. ' changed, back to wezterm.lua / defaults') or 'nothing changed'
     end)() },
+    { id = 'update', label = 'Update ......... ' .. (update.version() or 'check for a new version') },
   }
   selector(window, pane, 'Settings', choices, function(w, p2, id)
     if id == 'profile' then
@@ -426,6 +428,8 @@ menu = function(window, pane)
       options.menu(w, p2, menu)
     elseif id == 'reset_settings' then
       options.reset_menu(w, p2, menu)
+    elseif id == 'update' then
+      update.menu(w, p2, menu)
     end
   end, nil)
 end
