@@ -1,0 +1,587 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: cool-retro-term-wezterm <build@localhost>
+Date: Mon, 16 Nov 2026 16:35:57 +0100
+Subject: [PATCH 2/2] CRT: flat title bar with window buttons, mouse mapping,
+ full screen auto-hide
+
+- the CRT passes only cover the terminal area; the tab bar (which holds
+  the integrated window buttons) and OS borders are copied unprocessed
+- mouse positions over the curved screen are mapped through the same
+  distortion as the shader, so selection/clicks hit what is displayed
+- full screen: the tab bar is hidden (panes keep the whole screen) and
+  slides in over the CRT image when the mouse touches the edge
+  (crt.fullscreen_autohide_tab_bar, default on)
+- windows: no top/bottom resize hit areas in full screen, so the screen
+  edges deliver normal mouse events
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ config/src/crt.rs                          |   6 +
+ wezterm-gui/src/crt/mod.rs                 | 119 ++++++++++++--
+ wezterm-gui/src/renderstate.rs             |   4 +
+ wezterm-gui/src/termwindow/mod.rs          |   8 +-
+ wezterm-gui/src/termwindow/mouseevent.rs   |   4 +
+ wezterm-gui/src/termwindow/render/draw.rs  | 172 ++++++++++++++++++++-
+ wezterm-gui/src/termwindow/render/paint.rs |   2 +-
+ wezterm-gui/src/termwindow/resize.rs       |   4 +
+ window/src/os/windows/window.rs            |   6 +-
+ 9 files changed, 299 insertions(+), 26 deletions(-)
+
+diff --git a/config/src/crt.rs b/config/src/crt.rs
+index 833e999..831e7ea 100644
+--- a/config/src/crt.rs
++++ b/config/src/crt.rs
+@@ -138,6 +138,11 @@ pub struct CrtConfig {
+     /// Frame rate of the animated effects (noise, flicker, glowing line).
+     #[dynamic(default = "default_fps")]
+     pub fps: u8,
++
++    /// In full screen the tab bar (with the window buttons) is hidden and
++    /// slides in over the screen when the mouse touches the window edge.
++    #[dynamic(default = "default_true")]
++    pub fullscreen_autohide_tab_bar: bool,
+ }
+ 
+ impl Default for CrtConfig {
+@@ -170,6 +175,7 @@ impl Default for CrtConfig {
+             bloom_quality: default_quality(),
+             burn_in_quality: default_quality(),
+             fps: default_fps(),
++            fullscreen_autohide_tab_bar: true,
+         }
+     }
+ }
+diff --git a/wezterm-gui/src/crt/mod.rs b/wezterm-gui/src/crt/mod.rs
+index 7f7df64..7a35ae6 100644
+--- a/wezterm-gui/src/crt/mod.rs
++++ b/wezterm-gui/src/crt/mod.rs
+@@ -107,11 +107,51 @@ fn smoothstep(min: f32, max: f32, v: f32) -> f32 {
+     x * x * (3. - 2. * x)
+ }
+ 
++/// The part of the window that is shown as the CRT screen (window pixel
++/// coordinates, origin top left).  Everything outside of it (tab bar with the
++/// integrated window buttons, OS borders) is shown without effects.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct ScreenRect {
++    pub x: f32,
++    pub y: f32,
++    pub w: f32,
++    pub h: f32,
++}
++
++impl ScreenRect {
++    pub fn contains(&self, x: f32, y: f32) -> bool {
++        x >= self.x && y >= self.y && x < self.x + self.w && y < self.y + self.h
++    }
++}
++
++/// Curvature/bezel parameters as the shaders see them, for a screen of
++/// `w` x `h` pixels.
++fn geometry(p: &CrtParams, w: f32, h: f32) -> (f32, f32) {
++    let normalized_window_scale = 1024.0 / (0.5 * w + 0.5 * h).max(1.0);
++    let screen_curvature = p.screen_curvature * 0.6 * normalized_window_scale;
++    let frame_size = p.frame_size * 0.05 * normalized_window_scale;
++    (screen_curvature, frame_size)
++}
++
++/// Same as distortCoordinates() in the shaders: the screen pixel at logical
++/// position `tc` (0..1) shows the terminal content found at the returned
++/// logical position.  Used to map mouse positions onto the curved screen.
++pub fn distort_point(p: &CrtParams, rect: &ScreenRect, tc: (f32, f32)) -> (f32, f32) {
++    let (screen_curvature, frame_size) = geometry(p, rect.w, rect.h);
++    let px = tc.0 * (1.0 + frame_size * 2.0) - frame_size;
++    let py = tc.1 * (1.0 + frame_size * 2.0) - frame_size;
++    let (cx, cy) = (px - 0.5, py - 0.5);
++    let dist = (cx * cx + cy * cy) * screen_curvature;
++    (px + cx * (1.0 + dist) * dist, py + cy * (1.0 + dist) * dist)
++}
++
+ struct Targets {
++    window_size: (u32, u32),
+     size: (u32, u32),
+     bloom_size: (u32, u32),
+     burn_size: (u32, u32),
+     scene: Texture2d,
++    screen_src: Texture2d,
+     static_out: Texture2d,
+     frame: Texture2d,
+     bloom_a: Texture2d,
+@@ -179,7 +219,8 @@ impl CrtRenderer {
+         Rc::ptr_eq(&self.ctx, ctx)
+     }
+ 
+-    fn ensure_targets(&mut self, w: u32, h: u32, p: &CrtParams) -> anyhow::Result<()> {
++    fn ensure_targets(&mut self, window: (u32, u32), rect: &ScreenRect, p: &CrtParams) -> anyhow::Result<()> {
++        let (w, h) = (rect.w.max(1.) as u32, rect.h.max(1.) as u32);
+         let bloom_size = (
+             ((w as f32) * p.bloom_quality).max(1.) as u32,
+             ((h as f32) * p.bloom_quality).max(1.) as u32,
+@@ -189,7 +230,11 @@ impl CrtRenderer {
+             ((h as f32) * p.burn_in_quality).max(1.) as u32,
+         );
+         if let Some(t) = &self.targets {
+-            if t.size == (w, h) && t.bloom_size == bloom_size && t.burn_size == burn_size {
++            if t.window_size == window
++                && t.size == (w, h)
++                && t.bloom_size == bloom_size
++                && t.burn_size == burn_size
++            {
+                 return Ok(());
+             }
+         }
+@@ -202,10 +247,12 @@ impl CrtRenderer {
+             SimpleFrameBuffer::new(ctx, b)?.clear_color(0., 0., 0., 0.);
+         }
+         self.targets = Some(Targets {
++            window_size: window,
+             size: (w, h),
+             bloom_size,
+             burn_size,
+-            scene: target(ctx, w, h)?,
++            scene: target(ctx, window.0, window.1)?,
++            screen_src: target(ctx, w, h)?,
+             static_out: target(ctx, w, h)?,
+             frame: target(ctx, w, h)?,
+             bloom_a: target(ctx, bloom_size.0, bloom_size.1)?,
+@@ -217,30 +264,66 @@ impl CrtRenderer {
+         Ok(())
+     }
+ 
+-    /// Returns a framebuffer the terminal should be rendered into.
+-    pub fn scene_target(&mut self, w: u32, h: u32, p: &CrtParams) -> anyhow::Result<SimpleFrameBuffer<'_>> {
+-        self.ensure_targets(w, h, p)?;
++    /// Returns a framebuffer the whole window should be rendered into.
++    pub fn scene_target(
++        &mut self,
++        window: (u32, u32),
++        rect: &ScreenRect,
++        p: &CrtParams,
++    ) -> anyhow::Result<SimpleFrameBuffer<'_>> {
++        self.ensure_targets(window, rect, p)?;
+         let t = self.targets.as_ref().unwrap();
+         Ok(SimpleFrameBuffer::new(&self.ctx, &t.scene)?)
+     }
+ 
+-    /// Runs all CRT passes over the scene rendered via scene_target() and
+-    /// draws the result into `frame`.
+-    pub fn render(&mut self, frame: &mut glium::Frame, p: &CrtParams, cell_height: f32) -> anyhow::Result<()> {
++    /// Copies the scene into `frame` unchanged (tab bar, buttons, borders),
++    /// then runs the CRT passes over `rect` and draws them on top.
++    pub fn render(
++        &mut self,
++        frame: &mut glium::Frame,
++        rect: &ScreenRect,
++        p: &CrtParams,
++        cell_height: f32,
++    ) -> anyhow::Result<()> {
+         let Some(t) = self.targets.as_ref() else {
+             return Ok(());
+         };
+         let ctx = &self.ctx;
++        let (win_w, win_h) = t.window_size;
+         let (w, h) = t.size;
+         let (wf, hf) = (w as f32, h as f32);
+         let time = self.start.elapsed().as_secs_f32();
+         let strip = glium::index::NoIndices(glium::index::PrimitiveType::TriangleStrip);
+         let params = glium::DrawParameters::default();
+ 
++        // GL framebuffers have their origin at the bottom left.
++        let screen_gl = glium::Rect {
++            left: rect.x.max(0.) as u32,
++            bottom: (win_h as f32 - rect.y - hf).max(0.) as u32,
++            width: w,
++            height: h,
++        };
++
++        // ---- 0. window chrome as-is + extract the CRT screen area ----------
++        {
++            let scene_fb = SimpleFrameBuffer::new(ctx, &t.scene)?;
++            let whole = glium::Rect { left: 0, bottom: 0, width: win_w, height: win_h };
++            frame.blit_from_simple_framebuffer(
++                &scene_fb,
++                &whole,
++                &glium::BlitTarget { left: 0, bottom: 0, width: win_w as i32, height: win_h as i32 },
++                MagnifySamplerFilter::Nearest,
++            );
++            SimpleFrameBuffer::new(ctx, &t.screen_src)?.blit_from_simple_framebuffer(
++                &scene_fb,
++                &screen_gl,
++                &glium::BlitTarget { left: 0, bottom: 0, width: w as i32, height: h as i32 },
++                MagnifySamplerFilter::Nearest,
++            );
++        }
++
+         // ---- derived values (mirrors cool-retro-term's QML bindings) -----
+-        let normalized_window_scale = 1024.0 / (0.5 * wf + 0.5 * hf);
+-        let screen_curvature = p.screen_curvature * 0.6 * normalized_window_scale;
+-        let frame_size = p.frame_size * 0.05 * normalized_window_scale;
++        let (screen_curvature, frame_size) = geometry(p, wf, hf);
+         let frame_shininess = p.frame_shininess * 0.5;
+         let screen_radius = lint(4.0, 120.0, p.screen_radius);
+         let bloom = if p.bloom > 0. { p.bloom * 2.5 } else { 0. };
+@@ -282,7 +365,7 @@ impl CrtRenderer {
+             let (bw, bh) = t.bloom_size;
+             let radius = lint(16.0, 64.0, p.bloom_quality) * p.bloom_quality.max(0.25);
+             {
+-                let src = linear(&t.scene);
++                let src = linear(&t.screen_src);
+                 let dir = [1.0 / bw as f32, 0.0f32];
+                 let u = glium::uniform! { source: src, direction: dir, radius: radius };
+                 SimpleFrameBuffer::new(ctx, &t.bloom_a)?.draw(&self.quad, strip, &self.blur, &u, &params)?;
+@@ -300,7 +383,7 @@ impl CrtRenderer {
+             let prev = self.burn_idx;
+             let next = 1 - prev;
+             let u = glium::uniform! {
+-                txt_source: linear(&t.scene),
++                txt_source: linear(&t.screen_src),
+                 burnInSource: linear(&t.burn[prev]),
+                 burnInLastUpdate: time,
+                 burnInTime: burn_in_time,
+@@ -329,7 +412,7 @@ impl CrtRenderer {
+         // ---- 4. static -----------------------------------------------------
+         {
+             let u = glium::uniform! {
+-                source: linear(&t.scene),
++                source: linear(&t.screen_src),
+                 bloomSource: linear(&t.bloom_b),
+                 screenCurvature: screen_curvature,
+                 rgbShift: rgb_shift,
+@@ -386,7 +469,11 @@ impl CrtRenderer {
+             u.add("bloom", &bloom);
+             u.add("frameOn", &frame_on_f);
+             u.add("tintOn", &tint_on);
+-            frame.draw(&self.quad, strip, &self.dynamic, &u, &params)?;
++            let viewport = glium::DrawParameters {
++                viewport: Some(screen_gl),
++                ..Default::default()
++            };
++            frame.draw(&self.quad, strip, &self.dynamic, &u, &viewport)?;
+         }
+         Ok(())
+     }
+diff --git a/wezterm-gui/src/renderstate.rs b/wezterm-gui/src/renderstate.rs
+index 219d707..5021f1d 100644
+--- a/wezterm-gui/src/renderstate.rs
++++ b/wezterm-gui/src/renderstate.rs
+@@ -458,6 +458,10 @@ pub struct RenderLayer {
+ }
+ 
+ impl RenderLayer {
++    pub fn zindex(&self) -> i8 {
++        self.zindex
++    }
++
+     pub fn new(context: &RenderContext, num_quads: usize, zindex: i8) -> anyhow::Result<Self> {
+         let vb = [
+             Self::compute_vertices(context, 32)?,
+diff --git a/wezterm-gui/src/termwindow/mod.rs b/wezterm-gui/src/termwindow/mod.rs
+index 11bb012..e841cee 100644
+--- a/wezterm-gui/src/termwindow/mod.rs
++++ b/wezterm-gui/src/termwindow/mod.rs
+@@ -457,6 +457,8 @@ pub struct TermWindow {
+     /// cool-retro-term CRT post-processing state (OpenGL front end)
+     crt: RefCell<Option<crate::crt::CrtRenderer>>,
+     crt_failed: std::cell::Cell<bool>,
++    /// Full screen + CRT: the auto-hidden tab bar is currently shown.
++    crt_bar_revealed: std::cell::Cell<bool>,
+ 
+     created: Instant,
+ 
+@@ -687,6 +689,7 @@ impl TermWindow {
+         let myself = Self {
+             crt: RefCell::new(None),
+             crt_failed: std::cell::Cell::new(false),
++            crt_bar_revealed: std::cell::Cell::new(false),
+             created: Instant::now(),
+             connection_name,
+             last_fps_check_time: Instant::now(),
+@@ -1760,6 +1763,9 @@ impl TermWindow {
+         } else {
+             self.show_tab_bar = config.enable_tab_bar;
+         }
++        if self.crt_fullscreen_autohide() {
++            self.show_tab_bar = false;
++        }
+         *self.cursor_blink_state.borrow_mut() = ColorEase::new(
+             config.cursor_blink_rate,
+             config.cursor_blink_ease_in,
+@@ -2084,7 +2090,7 @@ impl TermWindow {
+                 self.config.enable_tab_bar && !self.config.hide_tab_bar_if_only_one_tab
+             } else {
+                 self.config.enable_tab_bar
+-            };
++            } && !self.crt_fullscreen_autohide();
+ 
+             // If the number of tabs changed and caused the tab bar to
+             // hide/show, then we'll need to resize things.  It is simplest
+diff --git a/wezterm-gui/src/termwindow/mouseevent.rs b/wezterm-gui/src/termwindow/mouseevent.rs
+index f7fefd0..4631863 100644
+--- a/wezterm-gui/src/termwindow/mouseevent.rs
++++ b/wezterm-gui/src/termwindow/mouseevent.rs
+@@ -59,6 +59,10 @@ impl super::TermWindow {
+     }
+ 
+     pub fn mouse_event_impl(&mut self, event: MouseEvent, context: &dyn WindowOps) {
++        if self.crt_update_bar_reveal(event.coords.x as f32, event.coords.y as f32) {
++            context.invalidate();
++        }
++        let event = self.crt_map_mouse_event(event);
+         log::trace!("{:?}", event);
+         let pane = match self.get_active_pane_or_overlay() {
+             Some(pane) => pane,
+diff --git a/wezterm-gui/src/termwindow/render/draw.rs b/wezterm-gui/src/termwindow/render/draw.rs
+index ce08f6c..6339ec0 100644
+--- a/wezterm-gui/src/termwindow/render/draw.rs
++++ b/wezterm-gui/src/termwindow/render/draw.rs
+@@ -174,29 +174,163 @@ impl crate::TermWindow {
+                 }
+             }
+             if let Some(crt) = slot.as_mut() {
+-                let (w, h) = (
++                let window = (
+                     self.dimensions.pixel_width as u32,
+                     self.dimensions.pixel_height as u32,
+                 );
++                let rect = self.crt_screen_rect_unchecked();
++                // Full screen: the auto-hidden tab bar is drawn over the
++                // finished CRT image instead of being part of the scene.
++                let overlay = self.crt_bar_overlay_visible();
+                 {
+-                    let mut scene = crt.scene_target(w, h, &params)?;
+-                    self.draw_scene_glium(&mut scene)?;
++                    let mut scene = crt.scene_target(window, &rect, &params)?;
++                    let layers = if overlay {
++                        SceneLayers::ExceptTabBar
++                    } else {
++                        SceneLayers::All
++                    };
++                    self.draw_scene_glium(&mut scene, layers, true)?;
+                 }
+                 let cell_height = self.render_metrics.cell_size.height as f32;
+-                return crt.render(frame, &params, cell_height);
++                crt.render(frame, &rect, &params, cell_height)?;
++                if overlay {
++                    self.draw_scene_glium(frame, SceneLayers::OnlyTabBar, false)?;
++                }
++                return Ok(());
+             }
+         }
+-        self.draw_scene_glium(frame)
++        self.draw_scene_glium(frame, SceneLayers::All, true)
++    }
++
++    /// CRT + full screen + `crt.fullscreen_autohide_tab_bar`: the tab bar is
++    /// hidden (panes use the whole screen) until the mouse reaches the edge.
++    pub fn crt_fullscreen_autohide(&self) -> bool {
++        self.config.crt.enabled
++            && self.config.crt.fullscreen_autohide_tab_bar
++            && self.config.enable_tab_bar
++            && self.config.use_fancy_tab_bar
++            && !self.crt_failed.get()
++            && self.window_state.contains(::window::WindowState::FULL_SCREEN)
++    }
++
++    pub fn crt_bar_overlay_visible(&self) -> bool {
++        self.crt_fullscreen_autohide() && self.crt_bar_revealed.get()
++    }
++
++    /// Whether the tab bar takes part in the layout.
++    pub fn compute_show_tab_bar(&self) -> bool {
++        let tabs = mux::Mux::get()
++            .get_window(self.mux_window_id)
++            .map(|w| w.count_tabs())
++            .unwrap_or(1);
++        let base = if tabs == 1 {
++            self.config.enable_tab_bar && !self.config.hide_tab_bar_if_only_one_tab
++        } else {
++            self.config.enable_tab_bar
++        };
++        base && !self.crt_fullscreen_autohide()
++    }
++
++    /// Reveal / hide the auto-hidden tab bar for a mouse position.
++    /// Returns true when the state changed and the window must be repainted.
++    pub fn crt_update_bar_reveal(&self, x: f32, y: f32) -> bool {
++        if !self.crt_fullscreen_autohide() {
++            return false;
++        }
++        let _ = x;
++        let h = self.dimensions.pixel_height as f32;
++        let bar = self.tab_bar_pixel_height().unwrap_or(0.);
++        // distance from the edge the bar lives on
++        let d = if self.config.tab_bar_at_bottom { h - 1.0 - y } else { y };
++        let revealed = self.crt_bar_revealed.get();
++        let want = if revealed { d < bar + 12.0 } else { d <= 2.0 };
++        if want != revealed {
++            self.crt_bar_revealed.set(want);
++            return true;
++        }
++        false
+     }
+ 
+-    fn draw_scene_glium<S: Surface>(&self, frame: &mut S) -> anyhow::Result<()> {
++    /// Window area shown as the CRT screen: everything except the tab bar
++    /// (which carries the integrated window buttons) and the OS borders.
++    fn crt_screen_rect_unchecked(&self) -> crate::crt::ScreenRect {
++        let w = self.dimensions.pixel_width as f32;
++        let h = self.dimensions.pixel_height as f32;
++        let tab_bar = if self.show_tab_bar {
++            self.tab_bar_pixel_height().unwrap_or(0.)
++        } else {
++            0.
++        };
++        let border = self.get_os_border();
++        let (top, bottom) = if self.config.tab_bar_at_bottom {
++            (border.top.get() as f32, tab_bar + border.bottom.get() as f32)
++        } else {
++            (tab_bar + border.top.get() as f32, border.bottom.get() as f32)
++        };
++        let left = border.left.get() as f32;
++        let right = border.right.get() as f32;
++        crate::crt::ScreenRect {
++            x: left,
++            y: top,
++            w: (w - left - right).max(1.),
++            h: (h - top - bottom).max(1.),
++        }
++    }
++
++    /// The CRT screen rect when the CRT effects are actually being drawn.
++    pub fn crt_screen_rect(&self) -> Option<crate::crt::ScreenRect> {
++        if !self.config.crt.enabled || self.crt_failed.get() {
++            return None;
++        }
++        match self.render_state.as_ref().map(|s| &s.context) {
++            Some(crate::renderstate::RenderContext::Glium(_)) => {}
++            _ => return None,
++        }
++        Some(self.crt_screen_rect_unchecked())
++    }
++
++    /// Mouse positions over the curved CRT screen are mapped to the terminal
++    /// content that is actually drawn under the pointer.
++    pub fn crt_map_mouse_event(&self, mut event: ::window::MouseEvent) -> ::window::MouseEvent {
++        if let Some(rect) = self.crt_screen_rect() {
++            let (mx, my) = (event.coords.x as f32, event.coords.y as f32);
++            let over_overlay_bar = self.crt_bar_overlay_visible() && {
++                let h = self.dimensions.pixel_height as f32;
++                let bar = self.tab_bar_pixel_height().unwrap_or(0.);
++                if self.config.tab_bar_at_bottom {
++                    my >= h - bar
++                } else {
++                    my < bar
++                }
++            };
++            if rect.contains(mx, my) && !over_overlay_bar {
++                let params = self.config.crt.resolve();
++                let tc = ((mx - rect.x) / rect.w, (my - rect.y) / rect.h);
++                let (u, v) = crate::crt::distort_point(&params, &rect, tc);
++                let u = u.clamp(0.0, 0.9999);
++                let v = v.clamp(0.0, 0.9999);
++                event.coords.x = (rect.x + u * rect.w) as isize;
++                event.coords.y = (rect.y + v * rect.h) as isize;
++            }
++        }
++        event
++    }
++
++    fn draw_scene_glium<S: Surface>(
++        &self,
++        frame: &mut S,
++        which: SceneLayers,
++        clear: bool,
++    ) -> anyhow::Result<()> {
+         use window::glium::texture::SrgbTexture2d;
+ 
+         let gl_state = self.render_state.as_ref().unwrap();
+         let tex = gl_state.glyph_cache.borrow().atlas.texture();
+         let tex = tex.downcast_ref::<SrgbTexture2d>().unwrap();
+ 
+-        frame.clear_color(0., 0., 0., 0.);
++        if clear {
++            frame.clear_color(0., 0., 0., 0.);
++        }
+ 
+         let projection = euclid::Transform3D::<f32, f32, f32>::ortho(
+             -(self.dimensions.pixel_width as f32) / 2.0,
+@@ -275,6 +409,9 @@ impl crate::TermWindow {
+         let rapid_blink: ColorEaseUniform = (*self.rapid_blink_state.borrow()).into();
+ 
+         for layer in gl_state.layers.borrow().iter() {
++            if !which.includes(layer.zindex()) {
++                continue;
++            }
+             for idx in 0..3 {
+                 let vb = &layer.vb.borrow()[idx];
+                 let (vertex_count, index_count) = vb.vertex_index_count();
+@@ -314,3 +451,24 @@ impl crate::TermWindow {
+         Ok(())
+     }
+ }
++
++/// Which render layers a scene draw includes.  The fancy tab bar (and the
++/// integrated window buttons inside it) lives on z-index 10..100; panes are
++/// below, modal overlays (palette, char select, ...) are at 100 and above.
++#[derive(Clone, Copy, PartialEq, Eq)]
++pub enum SceneLayers {
++    All,
++    ExceptTabBar,
++    OnlyTabBar,
++}
++
++impl SceneLayers {
++    fn includes(self, zindex: i8) -> bool {
++        let tab_bar = (10..100).contains(&zindex);
++        match self {
++            Self::All => true,
++            Self::ExceptTabBar => !tab_bar,
++            Self::OnlyTabBar => tab_bar,
++        }
++    }
++}
+diff --git a/wezterm-gui/src/termwindow/render/paint.rs b/wezterm-gui/src/termwindow/render/paint.rs
+index 26f7393..d554754 100644
+--- a/wezterm-gui/src/termwindow/render/paint.rs
++++ b/wezterm-gui/src/termwindow/render/paint.rs
+@@ -283,7 +283,7 @@ impl crate::TermWindow {
+             }
+         }
+ 
+-        if self.show_tab_bar {
++        if self.show_tab_bar || self.crt_bar_overlay_visible() {
+             self.paint_tab_bar(&mut layers).context("paint_tab_bar")?;
+         }
+ 
+diff --git a/wezterm-gui/src/termwindow/resize.rs b/wezterm-gui/src/termwindow/resize.rs
+index 86de9b8..9c82b98 100644
+--- a/wezterm-gui/src/termwindow/resize.rs
++++ b/wezterm-gui/src/termwindow/resize.rs
+@@ -51,6 +51,10 @@ impl super::TermWindow {
+         self.quad_generation += 1;
+         if last_state != self.window_state {
+             self.load_os_parameters();
++            // Entering/leaving full screen toggles the auto-hidden tab bar;
++            // update it before the new size is applied to the panes.
++            self.crt_bar_revealed.set(false);
++            self.show_tab_bar = self.compute_show_tab_bar();
+         }
+ 
+         if let Some(webgpu) = self.webgpu.as_mut() {
+diff --git a/window/src/os/windows/window.rs b/window/src/os/windows/window.rs
+index 715b67a..b825b14 100644
+--- a/window/src/os/windows/window.rs
++++ b/window/src/os/windows/window.rs
+@@ -1224,7 +1224,11 @@ unsafe fn wm_nchittest(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) ->
+     let coords = mouse_coords(lparam);
+     let screen_point = ScreenPoint::new(coords.x, coords.y);
+     let cursor_point = screen_to_client(hwnd, screen_point);
+-    let is_maximized = get_window_state(hwnd) == WindowState::MAXIMIZED;
++    // Full screen windows have no resize borders either: treat them like a
++    // maximized window so the edges deliver normal client mouse events.
++    let window_state = get_window_state(hwnd);
++    let is_maximized =
++        window_state == WindowState::MAXIMIZED || window_state == WindowState::FULL_SCREEN;
+ 
+     // check if mouse is in any of the resize areas (HTTOP, HTBOTTOM, etc)
+ 

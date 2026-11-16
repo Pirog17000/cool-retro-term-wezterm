@@ -28,6 +28,14 @@ images, key tables, Lua config, ...) with the cool-retro-term look on top.
 crt.apply(config, { profile = 'Monochrome Green', bloom = 0.8, burn_in = 0.5 })
 ```
 
+Window chrome: no OS title bar; tabs and the minimize / maximize / close
+buttons sit in wezterm's own title bar, drawn flat (no CRT effects) above the
+curved screen.  Mouse clicks and selection on the curved screen are mapped
+through the same distortion the shader uses.
+
+Full screen: **F11** or **Alt+Enter**.  The title bar hides and slides in over
+the screen when the mouse touches the top edge (`crt.fullscreen_autohide_tab_bar`).
+
 ## WezTerm core (this fork)
 
 This fork replaces Konsole's `Vt102Emulation` with the **wezterm-term** emulation core

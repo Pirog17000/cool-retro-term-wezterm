@@ -129,6 +129,10 @@ def write_lua(profiles):
         lines.append(f"  [{lua_str(name)}] = {{ font = {lua_str(d.get('fontName', 'TERMINESS_SCALED'))}, "
                      f"line_spacing = {float(d.get('lineSpacing', 0.1))!r}, margin = {float(d.get('margin', 0.5))!r}, "
                      f"screen_radius = {float(d.get('screenRadius', 0.2))!r}, "
+                     f"font_color = {lua_str(d.get('fontColor', '#ff8100'))}, "
+                     f"background_color = {lua_str(d.get('backgroundColor', '#000000'))}, "
+                     f"saturation_color = {float(d.get('saturationColor', 0.2))!r}, "
+                     f"contrast = {float(d.get('contrast', 0.8))!r}, "
                      f"blinking_cursor = {str(bool(d.get('blinkingCursor', False))).lower()} }},")
     lines += ["}", "", "M.profile_names = {"]
     for name, _ in profiles:
@@ -143,6 +147,71 @@ def write_lua(profiles):
 
 LUA_TAIL = r'''
 local function lint(a, b, t) return (1 - t) * a + t * b end
+
+local function parse_hex(s)
+  s = s:gsub('#', '')
+  return {
+    tonumber(s:sub(1, 2), 16) / 255,
+    tonumber(s:sub(3, 4), 16) / 255,
+    tonumber(s:sub(5, 6), 16) / 255,
+  }
+end
+
+local function to_hex(c)
+  local function b(v) return math.max(0, math.min(255, math.floor(v * 255 + 0.5))) end
+  return string.format('#%02x%02x%02x', b(c[1]), b(c[2]), b(c[3]))
+end
+
+local function mix(a, b, t)
+  return { lint(a[1], b[1], t), lint(a[2], b[2], t), lint(a[3], b[3], t) }
+end
+
+--- Phosphor colors exactly as cool-retro-term derives them from a profile.
+function M.phosphor_colors(p)
+  local font = parse_hex(p.font_color or '#ff8100')
+  local bg = parse_hex(p.background_color or '#000000')
+  local saturated = mix(font, { 1, 1, 1 }, (p.saturation_color or 0.2) * 0.5)
+  local k = 0.7 + (p.contrast or 0.8) * 0.3
+  return mix(bg, saturated, k), mix(saturated, bg, k)
+end
+
+--- Title bar (tab bar + integrated window buttons) in the profile's colors,
+--- drawn without CRT effects above the screen.
+function M.style_window(config, p, f)
+  local fg, bg = M.phosphor_colors(p)
+  local bar = to_hex(mix(bg, fg, 0.06))
+  local bar_inactive = to_hex(mix(bg, fg, 0.03))
+  local tab_active = to_hex(mix(bg, fg, 0.22))
+  local tab_inactive = to_hex(mix(bg, fg, 0.10))
+  local tab_hover = to_hex(mix(bg, fg, 0.32))
+  local text = to_hex(fg)
+  local text_dim = to_hex(mix(bg, fg, 0.6))
+
+  config.window_frame = config.window_frame or {}
+  local wf = config.window_frame
+  wf.font = wf.font or wezterm.font_with_fallback { f.family, 'Consolas' }
+  wf.font_size = wf.font_size or 11
+  wf.active_titlebar_bg = wf.active_titlebar_bg or bar
+  wf.inactive_titlebar_bg = wf.inactive_titlebar_bg or bar_inactive
+  wf.active_titlebar_fg = wf.active_titlebar_fg or text
+  wf.inactive_titlebar_fg = wf.inactive_titlebar_fg or text_dim
+  wf.button_fg = wf.button_fg or text
+  wf.button_bg = wf.button_bg or bar
+  wf.button_hover_fg = wf.button_hover_fg or to_hex(bg)
+  wf.button_hover_bg = wf.button_hover_bg or text
+
+  config.colors = config.colors or {}
+  config.colors.tab_bar = config.colors.tab_bar or {
+    background = bar,
+    inactive_tab_edge = bar,
+    active_tab = { bg_color = tab_active, fg_color = text },
+    inactive_tab = { bg_color = tab_inactive, fg_color = text_dim },
+    inactive_tab_hover = { bg_color = tab_hover, fg_color = text },
+    new_tab = { bg_color = bar, fg_color = text_dim },
+    new_tab_hover = { bg_color = tab_hover, fg_color = text },
+  }
+  config.integrated_title_button_color = config.integrated_title_button_color or text
+end
 
 --- Apply a cool-retro-term profile to a wezterm config.
 --- opts.profile    : profile name (default: config.crt.profile or "Default Amber")
@@ -162,7 +231,8 @@ function M.apply(config, opts)
   end
   config.crt.profile = name
   for k, v in pairs(opts) do
-    if k ~= 'profile' and k ~= 'font' and k ~= 'cell_height' and k ~= 'font_size' then
+    local local_keys = { profile = true, font = true, cell_height = true, font_size = true, style_window = true }
+    if not local_keys[k] then
       config.crt[k] = v
     end
   end
@@ -181,6 +251,10 @@ function M.apply(config, opts)
     config.freetype_render_target = 'Mono'
   else
     config.font_size = opts.font_size or 13
+  end
+
+  if opts.style_window ~= false then
+    M.style_window(config, p, f)
   end
 
   config.line_height = 1.0 + (p.line_spacing or 0)

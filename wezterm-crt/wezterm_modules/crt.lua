@@ -38,20 +38,20 @@ M.fonts = {
 }
 
 M.profiles = {
-  ["Default Amber"] = { font = "TERMINESS_SCALED", line_spacing = 0.1, margin = 0.3, screen_radius = 0.1, blinking_cursor = false },
-  ["Monochrome Green"] = { font = "DEPARTURE_MONO_SCALED", line_spacing = 0.1, margin = 0.3, screen_radius = 0.2, blinking_cursor = false },
-  ["Deep Blue"] = { font = "BIGBLUE_TERMINAL_SCALED", line_spacing = 0.1, margin = 0.3, screen_radius = 0.1, blinking_cursor = false },
-  ["Commodore 64"] = { font = "COMMODORE_64_SCALED", line_spacing = 0.1, margin = 0.3, screen_radius = 0.1, blinking_cursor = false },
-  ["Commodore PET"] = { font = "COMMODORE_PET_SCALED", line_spacing = 0.1, margin = 0.2, screen_radius = 0.3, blinking_cursor = false },
-  ["Apple ]["] = { font = "APPLE_II_SCALED", line_spacing = 0.1, margin = 0.0, screen_radius = 0.3, blinking_cursor = false },
-  ["Atari 400"] = { font = "ATARI_400_SCALED", line_spacing = 0.1, margin = 0.2, screen_radius = 0.2, blinking_cursor = false },
-  ["IBM VGA 8x16"] = { font = "IBM_VGA_8x16", line_spacing = 0.1, margin = 0.2, screen_radius = 0.1, blinking_cursor = false },
-  ["IBM 3278 Reborn"] = { font = "IBM_3278", line_spacing = 0.1, margin = 0.1, screen_radius = 0.0, blinking_cursor = false },
-  ["Neon Cyan"] = { font = "IOSEVKA", line_spacing = 0.1, margin = 0.1, screen_radius = 0.0, blinking_cursor = false },
-  ["Ghost Terminal"] = { font = "JETBRAINS_MONO", line_spacing = 0.1, margin = 0.1, screen_radius = 0.0, blinking_cursor = false },
-  ["Plasma"] = { font = "FIRA_CODE", line_spacing = 0.1, margin = 0.1, screen_radius = 0.0, blinking_cursor = false },
-  ["Boring"] = { font = "JETBRAINS_MONO", line_spacing = 0.1, margin = 0.0, screen_radius = 0.0, blinking_cursor = false },
-  ["E-Ink"] = { font = "HACK", line_spacing = 0.1, margin = 0.1, screen_radius = 0.0, blinking_cursor = false },
+  ["Default Amber"] = { font = "TERMINESS_SCALED", line_spacing = 0.1, margin = 0.3, screen_radius = 0.1, font_color = "#ff8100", background_color = "#000000", saturation_color = 0.2, contrast = 0.8, blinking_cursor = false },
+  ["Monochrome Green"] = { font = "DEPARTURE_MONO_SCALED", line_spacing = 0.1, margin = 0.3, screen_radius = 0.2, font_color = "#0ccc68", background_color = "#000000", saturation_color = 0.0, contrast = 0.8, blinking_cursor = false },
+  ["Deep Blue"] = { font = "BIGBLUE_TERMINAL_SCALED", line_spacing = 0.1, margin = 0.3, screen_radius = 0.1, font_color = "#7fb4ff", background_color = "#000000", saturation_color = 0.2, contrast = 0.8, blinking_cursor = false },
+  ["Commodore 64"] = { font = "COMMODORE_64_SCALED", line_spacing = 0.1, margin = 0.3, screen_radius = 0.1, font_color = "#a9a7ff", background_color = "#3b3b8f", saturation_color = 0.0, contrast = 0.7, blinking_cursor = false },
+  ["Commodore PET"] = { font = "COMMODORE_PET_SCALED", line_spacing = 0.1, margin = 0.2, screen_radius = 0.3, font_color = "#ffffff", background_color = "#000000", saturation_color = 0.0, contrast = 0.8, blinking_cursor = false },
+  ["Apple ]["] = { font = "APPLE_II_SCALED", line_spacing = 0.1, margin = 0.0, screen_radius = 0.3, font_color = "#4dff6b", background_color = "#001100", saturation_color = 0.0, contrast = 0.8, blinking_cursor = false },
+  ["Atari 400"] = { font = "ATARI_400_SCALED", line_spacing = 0.1, margin = 0.2, screen_radius = 0.2, font_color = "#8ed6ff", background_color = "#0f1f5a", saturation_color = 0.0, contrast = 0.9, blinking_cursor = false },
+  ["IBM VGA 8x16"] = { font = "IBM_VGA_8x16", line_spacing = 0.1, margin = 0.2, screen_radius = 0.1, font_color = "#c0c0c0", background_color = "#000000", saturation_color = 0.0, contrast = 1.0, blinking_cursor = false },
+  ["IBM 3278 Reborn"] = { font = "IBM_3278", line_spacing = 0.1, margin = 0.1, screen_radius = 0.0, font_color = "#3cff7a", background_color = "#000000", saturation_color = 0.0, contrast = 0.8, blinking_cursor = false },
+  ["Neon Cyan"] = { font = "IOSEVKA", line_spacing = 0.1, margin = 0.1, screen_radius = 0.0, font_color = "#52f7ff", background_color = "#001018", saturation_color = 0.6, contrast = 0.9, blinking_cursor = false },
+  ["Ghost Terminal"] = { font = "JETBRAINS_MONO", line_spacing = 0.1, margin = 0.1, screen_radius = 0.0, font_color = "#a6b3c0", background_color = "#0b1014", saturation_color = 0.0, contrast = 0.5, blinking_cursor = false },
+  ["Plasma"] = { font = "FIRA_CODE", line_spacing = 0.1, margin = 0.1, screen_radius = 0.0, font_color = "#ff9bd6", background_color = "#070014", saturation_color = 0.8, contrast = 0.8, blinking_cursor = false },
+  ["Boring"] = { font = "JETBRAINS_MONO", line_spacing = 0.1, margin = 0.0, screen_radius = 0.0, font_color = "#ffffff", background_color = "#000000", saturation_color = 0.0, contrast = 0.8, blinking_cursor = false },
+  ["E-Ink"] = { font = "HACK", line_spacing = 0.1, margin = 0.1, screen_radius = 0.0, font_color = "#101010", background_color = "#f2f2ec", saturation_color = 0.0, contrast = 0.5, blinking_cursor = false },
 }
 
 M.profile_names = {
@@ -74,6 +74,71 @@ M.profile_names = {
 
 local function lint(a, b, t) return (1 - t) * a + t * b end
 
+local function parse_hex(s)
+  s = s:gsub('#', '')
+  return {
+    tonumber(s:sub(1, 2), 16) / 255,
+    tonumber(s:sub(3, 4), 16) / 255,
+    tonumber(s:sub(5, 6), 16) / 255,
+  }
+end
+
+local function to_hex(c)
+  local function b(v) return math.max(0, math.min(255, math.floor(v * 255 + 0.5))) end
+  return string.format('#%02x%02x%02x', b(c[1]), b(c[2]), b(c[3]))
+end
+
+local function mix(a, b, t)
+  return { lint(a[1], b[1], t), lint(a[2], b[2], t), lint(a[3], b[3], t) }
+end
+
+--- Phosphor colors exactly as cool-retro-term derives them from a profile.
+function M.phosphor_colors(p)
+  local font = parse_hex(p.font_color or '#ff8100')
+  local bg = parse_hex(p.background_color or '#000000')
+  local saturated = mix(font, { 1, 1, 1 }, (p.saturation_color or 0.2) * 0.5)
+  local k = 0.7 + (p.contrast or 0.8) * 0.3
+  return mix(bg, saturated, k), mix(saturated, bg, k)
+end
+
+--- Title bar (tab bar + integrated window buttons) in the profile's colors,
+--- drawn without CRT effects above the screen.
+function M.style_window(config, p, f)
+  local fg, bg = M.phosphor_colors(p)
+  local bar = to_hex(mix(bg, fg, 0.06))
+  local bar_inactive = to_hex(mix(bg, fg, 0.03))
+  local tab_active = to_hex(mix(bg, fg, 0.22))
+  local tab_inactive = to_hex(mix(bg, fg, 0.10))
+  local tab_hover = to_hex(mix(bg, fg, 0.32))
+  local text = to_hex(fg)
+  local text_dim = to_hex(mix(bg, fg, 0.6))
+
+  config.window_frame = config.window_frame or {}
+  local wf = config.window_frame
+  wf.font = wf.font or wezterm.font_with_fallback { f.family, 'Consolas' }
+  wf.font_size = wf.font_size or 11
+  wf.active_titlebar_bg = wf.active_titlebar_bg or bar
+  wf.inactive_titlebar_bg = wf.inactive_titlebar_bg or bar_inactive
+  wf.active_titlebar_fg = wf.active_titlebar_fg or text
+  wf.inactive_titlebar_fg = wf.inactive_titlebar_fg or text_dim
+  wf.button_fg = wf.button_fg or text
+  wf.button_bg = wf.button_bg or bar
+  wf.button_hover_fg = wf.button_hover_fg or to_hex(bg)
+  wf.button_hover_bg = wf.button_hover_bg or text
+
+  config.colors = config.colors or {}
+  config.colors.tab_bar = config.colors.tab_bar or {
+    background = bar,
+    inactive_tab_edge = bar,
+    active_tab = { bg_color = tab_active, fg_color = text },
+    inactive_tab = { bg_color = tab_inactive, fg_color = text_dim },
+    inactive_tab_hover = { bg_color = tab_hover, fg_color = text },
+    new_tab = { bg_color = bar, fg_color = text_dim },
+    new_tab_hover = { bg_color = tab_hover, fg_color = text },
+  }
+  config.integrated_title_button_color = config.integrated_title_button_color or text
+end
+
 --- Apply a cool-retro-term profile to a wezterm config.
 --- opts.profile    : profile name (default: config.crt.profile or "Default Amber")
 --- opts.font       : font id from M.fonts to override the profile font
@@ -92,7 +157,8 @@ function M.apply(config, opts)
   end
   config.crt.profile = name
   for k, v in pairs(opts) do
-    if k ~= 'profile' and k ~= 'font' and k ~= 'cell_height' and k ~= 'font_size' then
+    local local_keys = { profile = true, font = true, cell_height = true, font_size = true, style_window = true }
+    if not local_keys[k] then
       config.crt[k] = v
     end
   end
@@ -111,6 +177,10 @@ function M.apply(config, opts)
     config.freetype_render_target = 'Mono'
   else
     config.font_size = opts.font_size or 13
+  end
+
+  if opts.style_window ~= false then
+    M.style_window(config, p, f)
   end
 
   config.line_height = 1.0 + (p.line_spacing or 0)
