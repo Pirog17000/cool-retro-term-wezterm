@@ -86,3 +86,4 @@ deploy/*.log
 /build/
 wezbridge/target/
 cool-retro-term-debug.log
+/build.local.ps1
