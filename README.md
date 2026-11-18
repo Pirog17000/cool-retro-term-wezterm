@@ -45,6 +45,8 @@ phosphor color, like the real tubes.*
 - `.github/workflows/build-wezterm-crt.yml` — builds releases on GitHub
 - `wezterm-crt/update.ps1`, `wezterm-crt/wezterm_modules/update.lua` — the
   Update menu and the installer it starts
+- `wezterm-crt/context-menu-add.bat`, `wezterm-crt/context-menu-remove.bat` —
+  add / remove "Open cool-retro-term here" in the Explorer context menu
 
 ```lua
 -- dist-wezterm\wezterm.lua
@@ -64,12 +66,20 @@ rounded corners).  Its strength is **CRT effects > Pointer reflection**
 size setting.  For screenshots, `WEZTERM_CRT_DEBUG_POINTER=x,y` (or
 `x,y,text` for the I-beam) places a fixed pointer instead of the mouse.
 
-Settings: the **gear** button in the title bar (or **Ctrl+Shift+,**) opens a
-menu on the CRT screen with the main categories only: **Profile**, **Font**,
-**CRT effects** (on/off, every effect value, rasterization, phosphor color,
-reset), **Full screen**, **Settings** and **Reset settings**.  Arrow keys (or
-j/k) move, Enter picks, Esc goes one level up, / searches.  CRT choices are
-saved in `crt_state.json` next to the exe and applied to all windows at once.
+Settings: the **gear** button in the title bar (or **F12**, **Ctrl+Shift+,**)
+opens a menu on the CRT screen with the look first: **Profile**, **Font**
+(the bundled retro fonts or any installed one), **Font size** and **Line
+spacing** (sliders), **CRT effects** (on/off, every effect value,
+rasterization, phosphor color, reset), then **Full screen**, **Shortcuts**,
+**All settings**, **Reset settings** and **Update**.  Each setting has one
+place: font, font size and line spacing are only here (All settings no longer
+lists `font`, `font_size`, `line_height`; values older versions saved there
+still count until the menu saves its own).  Arrow keys (or j/k) move, Enter
+picks, Esc goes one level up, / searches.  These choices are saved in
+`crt_state.json` next to the exe and applied to all windows at once.
+Pixel fonts go in whole and half multiples of their design size (whole ones
+keep every pixel sharp, half ones are smoothed), other fonts in points; a new
+profile brings its own font and keeps the size and line spacing.
 In **CRT effects** every value is a slider: Left/Right (or h/l) move it in
 steps of 0.05, Shift+Left/Right in steps of 0.01, and the change shows on the
 screen right away while the menu stays open; Enter still opens the list of
@@ -84,14 +94,49 @@ colors through the CRT, so you can see how chroma, saturation, contrast or
 the phosphor change them, and **Phosphor color** has a square in the color
 the screen gives it.  (wezterm gets an optional
 `slider = { value, min, max, step, names }` per `InputSelector` choice,
-reported to the action callback as a fifth argument, and
+reported to the action callback as a fifth argument,
 `window:set_crt_preview{...}`, which shows CRT values at once without a
-configuration reload; the saved values are picked up by all windows when the
-slider rests.)
+configuration reload (the saved values are picked up by all windows when the
+slider rests), and `window:clipboard_has_text()`.  Callbacks made with
+`wezterm.action_callback` while the configuration is evaluated keep
+wezterm's names, so key bindings keep working after a reload; callbacks made
+later (a menu opened from an event) get names unique across reloads and their
+events go to the configuration that made them.  A window without config
+overrides takes the configuration just loaded instead of evaluating
+`wezterm.lua` once more, which halves the time of a reload.)
 
-**Settings** lists every wezterm setting (219 options; the structured ones
-such as `window_padding`, `window_frame` and `colors` are split into their
-fields, 312 entries) in 20 categories with the current value and a
+Keys (`crt.setup`; a key bound in `wezterm.lua` wins over these):
+
+| Key | Does |
+| --- | --- |
+| **F12**, **Ctrl+Shift+,** | the settings menu |
+| **Ctrl+=** / **Ctrl+-** (also **Ctrl+Shift+=**, numpad **Ctrl++** / **Ctrl+-**) | next font size up / down: the window keeps its size, the number of rows and columns follows (wezterm's default zoom grows the window instead); saved like the menu's slider |
+| **Ctrl+0** | the default font size |
+| **Ctrl+V** | paste.  With an image (no text) in the clipboard the program gets its own image paste key: Claude Code on Windows reads images on **Alt+V**, so Ctrl+V pastes screenshots into it too.  At a PowerShell prompt PowerShell pastes on its own (multi-line text stays in the prompt instead of running line by line) |
+| **Ctrl+C** | copy the selection (and clear it); without a selection Ctrl+C goes to the program as usual |
+| **Shift+Enter** | a new line: Claude Code gets ESC CR (Meta+Enter, what its `/terminal-setup` binds in other terminals); PowerShell and others get Shift+Enter (PowerShell adds a line to the command) |
+| **Ctrl+Shift+-** | goes to the program (Ctrl+_ is undo in Claude Code) |
+| **F11**, **Alt+Enter** | full screen |
+
+Ctrl+V and Ctrl+C also match by key position, so they work with any keyboard
+layout.  Which program has the keys is found from the pane's process tree
+(Windows has no foreground process group: the newest program on the console
+and, walking up to the shell, the first one listed in `crt.tui_apps`, so a
+command Claude Code runs still counts as Claude Code; an npm install of
+Claude Code runs in `node.exe` and is matched by its script path).
+
+Explorer context menu: `context-menu-add.bat` (next to the exe) adds **Open
+cool-retro-term here** to the right-click menu of folders, of empty space
+inside a folder and of drives, for the current user (no administrator rights;
+run it again after moving the folder); it replaces an older entry of the Qt
+version.  `context-menu-remove.bat` takes the entries away.  The entry runs
+`wezterm-gui.exe start --cwd "<folder>."` (the dot keeps a drive root such as
+`C:\` from ending in an escaped quote).
+
+**All settings** lists every other wezterm setting (216 of wezterm's 219
+options: font, font size and line spacing live in the main menu; the
+structured ones such as `window_padding`, `window_frame` and `colors` are
+split into their fields) in 20 categories with the current value and a
 description, plus a search over all of them, editing `wezterm.lua`, reloading
 the configuration and the command palette.  Each option gets an editor for
 its type: on/off, a list of values, flag check boxes, a typed value (numbers,

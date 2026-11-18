@@ -24,7 +24,9 @@ config.check_for_updates = false
 -- double-click it to maximize.
 config.window_decorations = 'INTEGRATED_BUTTONS|RESIZE'
 config.integrated_title_button_style = 'Windows'
--- 'Settings' (gear) opens the settings menu, also on Ctrl+Shift+,
+-- 'Settings' (gear) opens the settings menu, also on F12 and Ctrl+Shift+,
+-- (crt.setup also binds Ctrl+V / Ctrl+C / Shift+Enter / Ctrl+= / Ctrl+- /
+-- Ctrl+0; a key bound in config.keys below wins over those)
 config.integrated_title_buttons = { 'Settings', 'Hide', 'Maximize', 'Close' }
 config.integrated_title_button_alignment = 'Right'
 config.hide_tab_bar_if_only_one_tab = false -- keep the bar: it holds the buttons

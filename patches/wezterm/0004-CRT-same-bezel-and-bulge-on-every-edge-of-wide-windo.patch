@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: cool-retro-term-wezterm <build@localhost>
 Date: Mon, 16 Nov 2026 19:11:32 +0100
-Subject: [PATCH 4/9] CRT: same bezel and bulge on every edge of wide windows
+Subject: [PATCH 04/10] CRT: same bezel and bulge on every edge of wide windows
 
 cool-retro-term sizes the bezel and the curvature displacement per axis in
 0..1 window units, so on a wide window the side bezels were several times

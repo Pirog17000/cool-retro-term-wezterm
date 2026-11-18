@@ -1,8 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: cool-retro-term-wezterm <build@localhost>
 Date: Mon, 16 Nov 2026 20:57:21 +0100
-Subject: [PATCH 9/9] CRT: screen shape settings act on their own; bezel seams
- into the corners
+Subject: [PATCH 09/10] CRT: screen shape settings act on their own; bezel
+ seams into the corners
 
 The frame size alone sets the bezel in the middle of the edges (300 f /
 (1 + 2.5 f) pixels, close to what the curved profiles had as frame plus

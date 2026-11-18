@@ -140,9 +140,9 @@ APPEND = {'font_dirs', 'color_scheme_dirs'}
 
 # Notes shown with options that interact with the CRT setup
 NOTES = {
-    'font': 'Overrides the CRT profile font (Settings > Font).',
-    'font_size': 'Overrides the size the CRT module picks for the font.',
-    'line_height': 'Overrides the CRT profile line spacing.',
+    'font': 'Set in the main settings menu (Settings > Font): one place for the font.',
+    'font_size': 'Set in the main settings menu (Settings > Font size, Ctrl+= / Ctrl+-).',
+    'line_height': 'Set in the main settings menu (Settings > Line spacing).',
     'window_padding.left': 'Overrides the padding the CRT module derives from the screen radius.',
     'window_padding.right': 'Overrides the padding the CRT module derives from the screen radius.',
     'window_padding.top': 'Overrides the padding the CRT module derives from the screen radius.',

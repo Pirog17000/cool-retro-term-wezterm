@@ -1,0 +1,189 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: cool-retro-term-wezterm <build@localhost>
+Date: Wed, 18 Nov 2026 11:25:33 +0100
+Subject: [PATCH 10/10] Key binding callbacks survive config reloads;
+ clipboard_has_text
+
+- Callbacks made with wezterm.action_callback while the configuration is
+  evaluated keep wezterm's names (user-defined-N): a window evaluates the
+  configuration again for its own copy, and the key bindings of that copy
+  must find their callbacks in the published lua context.  Callbacks made
+  at run time keep names unique across reloads.
+- Window events go to the lua context that has the handler.
+- A window without config overrides takes the configuration just loaded
+  instead of evaluating wezterm.lua once more (halves a reload).
+- window:clipboard_has_text(): lets a Ctrl+V binding hand the key to the
+  program when the clipboard holds an image.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ config/src/config.rs                |  7 ++++++-
+ config/src/lib.rs                   | 20 ++++++++++++++++++
+ config/src/lua.rs                   | 32 ++++++++++++++++++++++-------
+ wezterm-gui/src/scripting/guiwin.rs | 12 +++++++++++
+ wezterm-gui/src/termwindow/mod.rs   | 12 ++++++++---
+ 5 files changed, 72 insertions(+), 11 deletions(-)
+
+diff --git a/config/src/config.rs b/config/src/config.rs
+index 11b7db0..b57b73d 100644
+--- a/config/src/config.rs
++++ b/config/src/config.rs
+@@ -1101,10 +1101,13 @@ impl Config {
+                 Ok(default_config_with_overrides_applied()?.compute_extra_defaults(None))
+             });
+ 
++        let lua = make_lua_context(Path::new(""))?;
++        // no configuration file: every callback is made at run time
++        crate::lua::mark_config_evaluated(&lua)?;
+         Ok(LoadedConfig {
+             config: Ok(config?),
+             file_name: None,
+-            lua: Some(make_lua_context(Path::new(""))?),
++            lua: Some(lua),
+             warnings,
+         })
+     }
+@@ -1160,6 +1163,8 @@ impl Config {
+                 Ok(cfg)
+             });
+         let cfg = config?;
++        // callbacks made from now on are made at run time (wrap_callback)
++        crate::lua::mark_config_evaluated(&lua)?;
+ 
+         Ok(Some(LoadedConfig {
+             config: Ok(cfg.compute_extra_defaults(Some(p))),
+diff --git a/config/src/lib.rs b/config/src/lib.rs
+index 9eece42..6b8943f 100644
+--- a/config/src/lib.rs
++++ b/config/src/lib.rs
+@@ -248,6 +248,13 @@ impl LuaConfigState {
+             self.previous.insert(0, Rc::clone(&lua));
+             return Some(lua);
+         }
++        if event.starts_with("user-defined-") {
++            log::warn!(
++                "no lua context (of {}) has a handler for {}",
++                1 + self.previous.len(),
++                event
++            );
++        }
+         self.get_lua()
+     }
+ 
+@@ -718,6 +725,19 @@ impl ConfigInner {
+     }
+ 
+     fn overridden(&mut self, overrides: &wezterm_dynamic::Value) -> Result<ConfigHandle, Error> {
++        let no_overrides = match overrides {
++            wezterm_dynamic::Value::Null => true,
++            wezterm_dynamic::Value::Object(obj) => obj.is_empty(),
++            _ => false,
++        };
++        if no_overrides {
++            // the configuration just loaded; evaluating the file again for
++            // every window would only repeat it (and double each reload)
++            return Ok(ConfigHandle {
++                config: Arc::clone(&self.config),
++                generation: self.generation,
++            });
++        }
+         let config = Config::load_with_overrides(overrides);
+         Ok(ConfigHandle {
+             config: Arc::new(config.config?),
+diff --git a/config/src/lua.rs b/config/src/lua.rs
+index b067250..b352c65 100644
+--- a/config/src/lua.rs
++++ b/config/src/lua.rs
+@@ -20,6 +20,13 @@ pub use mlua;
+ 
+ static LUA_REGISTRY_USER_CALLBACK_COUNT: &str = "wezterm-user-callback-count";
+ static LUA_REGISTRY_GENERATION: &str = "wezterm-lua-generation";
++static LUA_REGISTRY_CONFIG_EVALUATED: &str = "wezterm-config-evaluated";
++
++/// Called once the configuration file has been evaluated in `lua`: from
++/// then on callbacks are created at run time (see wrap_callback).
++pub fn mark_config_evaluated(lua: &Lua) -> mlua::Result<()> {
++    lua.set_named_registry_value(LUA_REGISTRY_CONFIG_EVALUATED, true)
++}
+ /// Numbers the lua contexts, one per loaded configuration.
+ static LUA_GENERATION: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+ 
+@@ -651,14 +658,25 @@ fn font_with_fallback<'lua>(
+ 
+ pub fn wrap_callback<'lua>(lua: &'lua Lua, callback: mlua::Function) -> mlua::Result<String> {
+     let callback_count: i32 = lua.named_registry_value(LUA_REGISTRY_USER_CALLBACK_COUNT)?;
+-    // Unique across configuration reloads: a callback created at run time
+-    // (for example by a menu opened from an event handler) only exists in
+-    // the lua context that created it, and events for it are routed there
++    // While the configuration is being evaluated the names are the same in
++    // every evaluation of it: a window evaluates it again for its own copy
++    // (overridden_config), and the key bindings of that copy must find
++    // their callbacks in the published lua context.
++    // A callback created at run time (for example by a menu opened from an
++    // event handler) only exists in the lua context that created it: its
++    // name is unique across reloads, and events for it are routed there
+     // (with_lua_config_for_event_on_main_thread).
+-    let generation: i64 = lua
+-        .named_registry_value(LUA_REGISTRY_GENERATION)
+-        .unwrap_or(0);
+-    let user_event_id = format!("user-defined-{}-{}", generation, callback_count);
++    let evaluated: bool = lua
++        .named_registry_value(LUA_REGISTRY_CONFIG_EVALUATED)
++        .unwrap_or(false);
++    let user_event_id = if evaluated {
++        let generation: i64 = lua
++            .named_registry_value(LUA_REGISTRY_GENERATION)
++            .unwrap_or(0);
++        format!("user-defined-{}-{}", generation, callback_count)
++    } else {
++        format!("user-defined-{}", callback_count)
++    };
+     lua.set_named_registry_value(LUA_REGISTRY_USER_CALLBACK_COUNT, callback_count + 1)?;
+     register_event(lua, (user_event_id.clone(), callback))?;
+     Ok(user_event_id)
+diff --git a/wezterm-gui/src/scripting/guiwin.rs b/wezterm-gui/src/scripting/guiwin.rs
+index 16f9084..e7db9f7 100644
+--- a/wezterm-gui/src/scripting/guiwin.rs
++++ b/wezterm-gui/src/scripting/guiwin.rs
+@@ -207,6 +207,18 @@ impl UserData for GuiWin {
+             this.window.notify(TermWindowNotif::SetCrtPreview(value));
+             Ok(())
+         });
++        // Whether the clipboard holds text.  Lets a Ctrl+V binding hand the
++        // key to the program when there is no text to paste (an image, say).
++        methods.add_method("clipboard_has_text", |_, _this, _: ()| {
++            #[cfg(windows)]
++            {
++                use winapi::um::winuser::{IsClipboardFormatAvailable, CF_UNICODETEXT};
++                // no need to open the clipboard for this
++                return Ok(unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT) } != 0);
++            }
++            #[allow(unreachable_code)]
++            Ok(true)
++        });
+         methods.add_async_method("is_focused", |_, this, _: ()| async move {
+             let (tx, rx) = smol::channel::bounded(1);
+             this.window
+diff --git a/wezterm-gui/src/termwindow/mod.rs b/wezterm-gui/src/termwindow/mod.rs
+index 7dbe074..2de49f5 100644
+--- a/wezterm-gui/src/termwindow/mod.rs
++++ b/wezterm-gui/src/termwindow/mod.rs
+@@ -1632,9 +1632,15 @@ impl TermWindow {
+             Ok(())
+         }
+ 
+-        promise::spawn::spawn(config::with_lua_config_on_main_thread(move |lua| {
+-            do_event(lua, name, window, pane)
+-        }))
++        // the lua context that registered the handler: key bindings made with
++        // action_callback name a callback of the configuration they came from
++        let event = name.clone();
++        promise::spawn::spawn(async move {
++            config::with_lua_config_for_event_on_main_thread(&event, move |lua| {
++                do_event(lua, name, window, pane)
++            })
++            .await
++        })
+         .detach();
+     }
+ 

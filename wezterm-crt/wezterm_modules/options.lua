@@ -57,6 +57,40 @@ local function store(key, value)
   return M.save(o)
 end
 
+--- Remove `keys` from the saved options without reloading the
+--- configuration (the caller saves something else that reloads it).
+function M.forget(keys)
+  local o = M.load()
+  local found = false
+  for _, k in ipairs(keys) do
+    if o[k] ~= nil then
+      o[k] = nil
+      found = true
+    end
+  end
+  if not found then return end
+  local f = io.open(M.path, 'w')
+  if f then
+    f:write(encode(o))
+    f:close()
+  end
+end
+
+-- Options the main settings menu owns (Settings > Font, Font size, Line
+-- spacing): not listed here, so each setting has one place, and not applied
+-- from wezterm_options.json (crt.apply reads the values older versions
+-- saved there).
+M.owned = { font = true, font_size = true, line_height = true }
+
+-- `keys` without the owned ones
+local function listed(keys)
+  local r = {}
+  for _, k in ipairs(keys) do
+    if not M.owned[k] then table.insert(r, k) end
+  end
+  return r
+end
+
 ---------------------------------------------------------------------------
 -- Applying values to a config
 
@@ -174,7 +208,9 @@ function M.apply(config)
   table.sort(keys)
   for _, k in ipairs(keys) do
     local e = cat.options[k]
-    if not e or e.t == 'complex' then
+    if M.owned[k] then
+      -- applied by crt.apply (older versions saved these here)
+    elseif not e or e.t == 'complex' then
       wezterm.log_warn('options: ignoring unknown option ' .. k)
     else
       local err = try_set(config, k, e, o[k])
@@ -673,7 +709,7 @@ local function all_keys()
   local cat = catalog()
   local keys = {}
   for _, c in ipairs(cat.categories) do
-    for _, k in ipairs(c.keys) do table.insert(keys, k) end
+    for _, k in ipairs(listed(c.keys)) do table.insert(keys, k) end
   end
   return keys
 end
@@ -687,10 +723,11 @@ root = function(window, pane, back)
   local choices = {}
   -- the categories first, then search and the wezterm.lua tools
   for i, c in ipairs(cat.categories) do
-    local n = changed_count(o, c.keys)
+    local keys = listed(c.keys)
+    local n = changed_count(o, keys)
     table.insert(choices, {
       id = 'cat:' .. i,
-      label = string.format('  %-38s %3d', c.name, #c.keys) .. dim(n > 0 and string.format('   %d changed', n) or ''),
+      label = string.format('  %-38s %3d', c.name, #keys) .. dim(n > 0 and string.format('   %d changed', n) or ''),
     })
   end
   table.insert(choices, { id = '__sep', label = dim('  ' .. string.rep('-', 44)) })
@@ -723,7 +760,7 @@ root = function(window, pane, back)
     else
       local i = tonumber(id:match('^cat:(%d+)$'))
       local c = cat.categories[i]
-      return options_list(w, p, crumbs .. ' > ' .. c.name, c.keys, again)
+      return options_list(w, p, crumbs .. ' > ' .. c.name, listed(c.keys), again)
     end
   end, back)
 end
@@ -757,8 +794,15 @@ end
 
 --- Number of options in the catalog (for the menu label).
 function M.count()
-  return catalog().top_level_count
+  local n = catalog().top_level_count
+  for k in pairs(M.owned) do
+    if catalog().options[k] then n = n - 1 end
+  end
+  return n
 end
+
+--- Installed font families (slow: runs `wezterm ls-fonts`).
+M.system_fonts = system_fonts
 
 -- Exposed for tests
 M._validate = validate

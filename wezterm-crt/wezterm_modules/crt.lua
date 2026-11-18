@@ -60,7 +60,8 @@ M.phosphors = {
 
 -- Keys of crt.apply() options that are not config.crt fields
 local LOCAL_KEYS = {
-  profile = true, font = true, cell_height = true, font_size = true, style_window = true,
+  profile = true, font = true, font_family = true, cell_height = true, font_size = true,
+  line_spacing = true, style_window = true,
 }
 
 local function lint(a, b, t) return (1 - t) * a + t * b end
@@ -177,13 +178,123 @@ function M.style_window(config, p, f)
 end
 
 ---------------------------------------------------------------------------
+-- Font, font size, line spacing
+--
+-- One place for them: the main settings menu (and Ctrl+= / Ctrl+- / Ctrl+0
+-- for the size) saves them in crt_state.json.  Older versions kept font,
+-- font_size and line_height under All settings (wezterm_options.json); those
+-- values still count until the menu saves its own.
+
+local function num(v)
+  if math.abs(v - math.floor(v + 0.5)) < 1e-6 then return string.format('%d', math.floor(v + 0.5)) end
+  return string.format('%.1f', v)
+end
+
+--- The font to use: an installed family (opts.font_family), else a bundled
+--- font (opts.font, an id from crt_data.fonts), else the profile's font.
+function M.font_for(p, opts)
+  if opts.font_family then
+    return { name = opts.font_family, family = opts.font_family, scaled = false, installed = true }
+  end
+  return M.fonts[opts.font or p.font] or M.fonts.TERMINESS_SCALED
+end
+
+--- The sizes a font can take, in points, and their names.  Pixel fonts go
+--- in whole and half multiples of their design size up to 96 px cells
+--- (whole multiples keep every pixel sharp); other fonts in points.
+function M.size_steps(f)
+  local steps, names = {}, {}
+  if f.scaled then
+    local kmax = math.max(2, math.min(16, math.floor(2 * 96 / f.pixel_size)))
+    for k = 2, kmax do
+      local px = f.pixel_size * k / 2
+      table.insert(steps, px * 0.75)
+      table.insert(names, string.format('%s px  (x%s)', num(px), num(k / 2)))
+    end
+  else
+    for pt = 6, 40 do
+      table.insert(steps, pt)
+      table.insert(names, pt .. ' pt')
+    end
+  end
+  return steps, names
+end
+
+local function nearest(steps, v)
+  local best, dist = 1, math.huge
+  for i, s in ipairs(steps) do
+    local d = math.abs(s - v)
+    if d < dist then best, dist = i, d end
+  end
+  return best
+end
+
+--- Index into size_steps(f) of the size in effect.
+function M.size_index(f, opts)
+  local steps = M.size_steps(f)
+  if opts.font_size then return nearest(steps, opts.font_size) end
+  if f.scaled then
+    local scale = math.max(1, math.floor((opts.cell_height or 24) / f.pixel_size + 0.5))
+    return math.min(#steps, 2 * scale - 1)
+  end
+  return nearest(steps, 13)
+end
+
+-- Text settings older versions saved under All settings
+local LEGACY_TEXT = { 'font', 'font_size', 'line_height' }
+
+--- Font, font size and line spacing in effect: the menu's (crt_state.json),
+--- else the ones older versions saved (wezterm_options.json), else `base`
+--- (wezterm.lua's crt.apply options).
+function M.text_opts(state, base)
+  base = base or {}
+  local t = {
+    font = base.font, font_family = base.font_family, font_size = base.font_size,
+    cell_height = base.cell_height, line_spacing = base.line_spacing,
+  }
+  local legacy = options.load()
+  if type(legacy.font) == 'string' and legacy.font ~= '' then
+    t.font, t.font_family = nil, legacy.font
+  end
+  if type(legacy.font_size) == 'number' then t.font_size = legacy.font_size end
+  if type(legacy.line_height) == 'number' then t.line_spacing = legacy.line_height - 1 end
+  if state.font or state.font_family then
+    t.font, t.font_family = state.font, state.font_family
+  end
+  if state.font_size then t.font_size = state.font_size end
+  if state.line_spacing then t.line_spacing = state.line_spacing end
+  return t
+end
+
+-- Change the text settings in crt_state.json; the values older versions
+-- saved move over first, so they are not lost.
+local function save_text(fn)
+  local s = M.load_state()
+  local legacy = options.load()
+  if s.font == nil and s.font_family == nil and type(legacy.font) == 'string' and legacy.font ~= '' then
+    s.font_family = legacy.font
+  end
+  if s.font_size == nil and type(legacy.font_size) == 'number' then s.font_size = legacy.font_size end
+  if s.line_spacing == nil and type(legacy.line_height) == 'number' then
+    s.line_spacing = legacy.line_height - 1
+  end
+  fn(s)
+  options.forget(LEGACY_TEXT)
+  M.save_state(s)
+end
+
+---------------------------------------------------------------------------
 -- Applying a profile
 
 --- Apply a cool-retro-term profile to a wezterm config.
 --- opts.profile    : profile name (default "Default Amber")
 --- opts.font       : font id from crt_data.fonts to override the profile font
---- opts.cell_height: target cell height in pixels for pixel fonts (default 24)
---- opts.font_size  : font size in points for vector fonts (default 13)
+--- opts.font_family: an installed font family instead
+--- opts.font_size  : font size in points (pixel fonts take the nearest whole
+---                   or half multiple of their design size)
+--- opts.cell_height: without font_size: cell height in pixels for pixel
+---                   fonts (default 24, a whole multiple is taken)
+--- opts.line_spacing: extra space between lines (profile default)
 --- opts.style_window = false keeps wezterm's default title bar colors
 --- Any other key is copied into config.crt (effect overrides).
 --- Values saved by the settings menu (crt_state.json) take precedence.
@@ -194,6 +305,7 @@ function M.apply(config, opts)
     -- a different profile chosen in the menu replaces wezterm.lua's overrides
     opts = { cell_height = opts.cell_height, font_size = opts.font_size, style_window = opts.style_window }
   end
+  M.base_opts = copy(opts) -- what wezterm.lua asks for (the menu shows it)
   for k, v in pairs(state) do opts[k] = v end
   wezterm.add_to_config_reload_watch_list(M.state_path)
 
@@ -214,27 +326,26 @@ function M.apply(config, opts)
   local eff = copy(p)
   for k, v in pairs(config.crt) do eff[k] = v end
 
-  local f = M.fonts[opts.font or p.font] or M.fonts.TERMINESS_SCALED
+  local text = M.text_opts(state, M.base_opts)
+  local f = M.font_for(p, text)
   config.font_dirs = config.font_dirs or {}
   table.insert(config.font_dirs, wezterm.executable_dir .. '/fonts')
   config.font = wezterm.font_with_fallback { f.family, 'Consolas' }
 
-  if f.scaled then
-    -- Pixel fonts look right at integer multiples of their design size.
-    local target = opts.cell_height or 24
-    local scale = math.max(1, math.floor(target / f.pixel_size + 0.5))
-    config.font_size = f.pixel_size * scale * 0.75
+  local steps = M.size_steps(f)
+  local size = M.size_index(f, text)
+  config.font_size = steps[size]
+  if f.scaled and size % 2 == 1 then
+    -- a whole multiple of the design size: every font pixel stays sharp
     config.freetype_load_target = 'Mono'
     config.freetype_render_target = 'Mono'
-  else
-    config.font_size = opts.font_size or 13
   end
 
   if opts.style_window ~= false then
     M.style_window(config, eff, f)
   end
 
-  config.line_height = 1.0 + (p.line_spacing or 0)
+  config.line_height = 1.0 + (text.line_spacing or p.line_spacing or 0)
   local radius = lint(4.0, 120.0, eff.screen_radius or 0.2)
   local pad = math.floor(lint(1.0, 40.0, p.margin or 0.5) + (1.0 - math.sqrt(0.5)) * radius)
   config.window_padding = { left = pad, right = pad, top = pad, bottom = pad }
@@ -254,7 +365,7 @@ end
 -- Left/Right move while the menu stays open (Shift: finer); every change
 -- goes to on_adjust(window, pane, id, value) and is applied at once.
 
-local function selector(window, pane, title, choices, on_pick, on_back, on_adjust)
+local function selector(window, pane, title, choices, on_pick, on_back, on_adjust, fuzzy)
   local esc = on_back and 'Esc = back' or 'Esc = close'
   local keys = on_adjust and 'Up/Down = move, Left/Right = adjust, Enter = choose, '
     or 'Up/Down = move, Enter = choose, '
@@ -264,7 +375,7 @@ local function selector(window, pane, title, choices, on_pick, on_back, on_adjus
       description = title .. '      ' .. keys .. esc .. ', / = search',
       alphabet = '', -- no number labels: arrow keys only
       choices = choices,
-      fuzzy = false,
+      fuzzy = fuzzy or false,
       action = wezterm.action_callback(function(w, p, id, _label, value)
         if value ~= nil then
           if on_adjust and id then on_adjust(w, p, id, value) end
@@ -316,23 +427,132 @@ local function profiles_menu(window, pane)
     table.insert(choices, { id = n, label = (n == name and '> ' or '  ') .. n })
   end
   selector(window, pane, 'Settings > Profile', choices, function(w, p, id)
-    M.save_state { profile = id } -- a new profile starts from its own values
+    -- a new profile starts from its own values (and its font); the text
+    -- size and line spacing chosen in the menu stay
+    save_text(function(s)
+      local keep = { profile = id, font_size = s.font_size, line_spacing = s.line_spacing }
+      for k in pairs(s) do s[k] = nil end
+      for k, v in pairs(keep) do s[k] = v end
+    end)
     menu(w, p)
   end, menu)
 end
 
-local function fonts_menu(window, pane)
+-- The font, its sizes and the line spacing as the menu shows them
+local function text_now(window)
   local _, p, _, state = current(window)
-  local cur = state.font or p.font
-  local choices = { { id = '__profile', label = '  (profile default)' } }
+  local t = M.text_opts(state, M.base_opts)
+  local f = M.font_for(p, t)
+  local steps, names = M.size_steps(f)
+  return {
+    p = p, t = t, f = f, steps = steps, names = names,
+    size = M.size_index(f, t),
+    spacing = t.line_spacing or p.line_spacing or 0,
+  }
+end
+
+local function installed_fonts_menu(window, pane, back)
+  local cur = text_now(window).t.font_family
+  local choices = {}
+  for _, fam in ipairs(options.system_fonts()) do
+    table.insert(choices, { id = fam, label = (fam == cur and '> ' or '  ') .. fam })
+  end
+  if #choices == 0 then table.insert(choices, { id = '__none', label = '  (no fonts found)' }) end
+  selector(window, pane, 'Settings > Font > Installed fonts', choices, function(w, p2, id)
+    if id ~= '__none' then
+      save_text(function(s)
+        s.font = nil
+        s.font_family = id
+      end)
+    end
+    back(w, p2)
+  end, back, nil, true)
+end
+
+local function fonts_menu(window, pane, back)
+  back = back or menu
+  local now = text_now(window)
+  local cur = not now.t.font_family and (now.t.font or now.p.font) or nil
+  local state = M.load_state()
+  local own = state.font or state.font_family or now.t.font_family
+  local choices = {
+    { id = '__profile', label = (own and '  ' or '> ') .. 'profile default (' .. M.fonts[now.p.font].name .. ')' },
+  }
   for _, id in ipairs(M.font_ids) do
     local f = M.fonts[id]
-    table.insert(choices, { id = id, label = (id == cur and '> ' or '  ') .. f.name })
+    table.insert(choices, { id = id, label = ((own and id == cur) and '> ' or '  ') .. f.name })
   end
+  table.insert(choices, {
+    id = '__installed',
+    label = (now.t.font_family and '> ' or '  ') .. 'Installed fonts ...'
+      .. (now.t.font_family and ('   ' .. now.t.font_family) or ''),
+  })
   selector(window, pane, 'Settings > Font', choices, function(w, p2, id)
-    update_state(function(s) s.font = (id ~= '__profile') and id or nil end)
-    menu(w, p2)
-  end, menu)
+    if id == '__installed' then
+      return installed_fonts_menu(w, p2, function(w2, p3) fonts_menu(w2, p3, back) end)
+    end
+    save_text(function(s)
+      s.font = (id ~= '__profile') and id or nil
+      s.font_family = nil
+    end)
+    back(w, p2)
+  end, back)
+end
+
+local function size_menu(window, pane, back)
+  back = back or menu
+  local now = text_now(window)
+  local own = now.t.font_size ~= nil
+  local choices = { { id = '__default', label = (own and '  ' or '> ') .. 'default' } }
+  for i, n in ipairs(now.names) do
+    table.insert(choices, { id = tostring(i), label = ((own and i == now.size) and '> ' or '  ') .. n })
+  end
+  selector(window, pane, 'Settings > Font size', choices, function(w, p2, id)
+    save_text(function(s) s.font_size = (id ~= '__default') and now.steps[tonumber(id)] or nil end)
+    back(w, p2)
+  end, back)
+end
+
+local SPACINGS = { 0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5 }
+
+local function spacing_menu(window, pane, back)
+  back = back or menu
+  local now = text_now(window)
+  local own = now.t.line_spacing ~= nil
+  local choices = {
+    { id = '__profile', label = (own and '  ' or '> ') .. string.format('profile default (%.2f)', now.p.line_spacing or 0) },
+  }
+  for _, v in ipairs(SPACINGS) do
+    local mark = (own and math.abs(now.spacing - v) < 0.001) and '> ' or '  '
+    table.insert(choices, { id = tostring(v), label = mark .. string.format('%.2f', v) })
+  end
+  selector(window, pane, 'Settings > Line spacing', choices, function(w, p2, id)
+    save_text(function(s) s.line_spacing = (id ~= '__profile') and tonumber(id) or nil end)
+    back(w, p2)
+  end, back)
+end
+
+-- Keyboard shortcuts (shown in the menu; set up in M.setup)
+M.shortcuts = {
+  { 'F12, Ctrl+Shift+,', 'this menu' },
+  { 'Ctrl+= / Ctrl+-', 'font size (the window keeps its size)' },
+  { 'Ctrl+0', 'default font size' },
+  { 'Ctrl+V', 'paste; an image goes to Claude Code (its Alt+V)' },
+  { 'Ctrl+C', 'copy the selection; without one, Ctrl+C as usual' },
+  { 'Shift+Enter', 'new line in Claude Code and PowerShell' },
+  { 'F11, Alt+Enter', 'full screen' },
+  { 'Ctrl+Shift+C / V', 'copy / paste' },
+  { 'Ctrl+Shift+F', 'search the scrollback' },
+  { 'Ctrl+Shift+T / W', 'new tab / close the tab' },
+  { 'Ctrl+Shift+P', 'all commands' },
+}
+
+local function keys_menu(window, pane)
+  local choices = {}
+  for i, s in ipairs(M.shortcuts) do
+    table.insert(choices, { id = tostring(i), label = string.format('  %-19s %s', s[1], s[2]) })
+  end
+  selector(window, pane, 'Settings > Shortcuts', choices, function(w, p2) menu(w, p2) end, menu)
 end
 
 local VALUES = { 0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0 }
@@ -441,7 +661,7 @@ effects_menu = function(window, pane)
   })
   table.insert(choices, {
     id = '__reset',
-    label = string.format('%-19s %s', 'Reset CRT', 'profile, font and effects back to wezterm.lua'),
+    label = string.format('%-19s %s', 'Reset CRT', 'profile, font, text size and effects back to wezterm.lua'),
   })
   selector(window, pane, 'Settings > CRT effects', choices, function(w, p, id)
     if id == '__toggle' then
@@ -449,6 +669,7 @@ effects_menu = function(window, pane)
       return effects_menu(w, p)
     end
     if id == '__reset' then
+      options.forget(LEGACY_TEXT)
       M.save_state {}
       return effects_menu(w, p)
     end
@@ -478,17 +699,23 @@ effects_menu = function(window, pane)
 end
 
 menu = function(window, pane)
-  local name, p, eff, state = current(window)
-  local font = M.fonts[state.font or p.font]
+  local name, _, eff = current(window)
+  local now = text_now(window)
   local choices = {
     { id = 'profile', label = 'Profile ........ ' .. name },
-    { id = 'font', label = 'Font ........... ' .. (font and font.name or '?') },
+    { id = 'font', label = 'Font ........... ' .. now.f.name },
+    -- slider labels are 15 wide: the bar starts where the values do
+    { id = 'font_size', label = 'Font size .....',
+      slider = { value = now.size, min = 1, max = #now.steps, step = 1, names = now.names } },
+    { id = 'line_spacing', label = 'Line spacing ..',
+      slider = { value = now.spacing, min = 0, max = 0.5, step = 0.05 } },
     { id = 'effects', label = 'CRT effects .... ' .. (eff.enabled and 'ON' or 'OFF') .. ', bloom, noise, curvature, frame ...' },
     { id = 'fullscreen', label = 'Full screen .... F11 / Alt+Enter' },
-    { id = 'settings', label = 'Settings ....... all wezterm settings (' .. options.count() .. ') by category' },
+    { id = 'keys', label = 'Shortcuts ...... F12 menu, Ctrl+V paste, Shift+Enter new line, Ctrl+= / Ctrl+- size ...' },
+    { id = 'settings', label = 'All settings ... every other wezterm setting (' .. options.count() .. '), by category' },
     { id = 'reset_settings', label = 'Reset settings . ' .. (function()
       local n = options.changed()
-      return n > 0 and (n .. ' changed, back to wezterm.lua / defaults') or 'nothing changed'
+      return n > 0 and (n .. ' changed in All settings, back to wezterm.lua / defaults') or 'nothing changed in All settings'
     end)() },
     { id = 'update', label = 'Update ......... ' .. (update.version() or 'check for a new version') },
   }
@@ -497,10 +724,16 @@ menu = function(window, pane)
       profiles_menu(w, p2)
     elseif id == 'font' then
       fonts_menu(w, p2)
+    elseif id == 'font_size' then
+      size_menu(w, p2)
+    elseif id == 'line_spacing' then
+      spacing_menu(w, p2)
     elseif id == 'effects' then
       effects_menu(w, p2)
     elseif id == 'fullscreen' then
       w:toggle_fullscreen()
+    elseif id == 'keys' then
+      keys_menu(w, p2)
     elseif id == 'settings' then
       options.menu(w, p2, menu)
     elseif id == 'reset_settings' then
@@ -508,13 +741,134 @@ menu = function(window, pane)
     elseif id == 'update' then
       update.menu(w, p2, menu)
     end
-  end, nil)
+  end, nil, function(w, _p, id, value)
+    -- a slider moved: saved and applied at once (the window keeps its size)
+    if id == 'font_size' then
+      local steps = text_now(w).steps
+      local i = math.max(1, math.min(#steps, math.floor(value + 0.5)))
+      save_text(function(s) s.font_size = steps[i] end)
+    elseif id == 'line_spacing' then
+      save_text(function(s) s.line_spacing = math.floor(value * 100 + 0.5) / 100 end)
+    end
+  end)
 end
 
 M.open_menu = function(window, pane) menu(window, pane) end
 
---- Register the settings menu (gear button in the title bar and
---- Ctrl+Shift+, as a keyboard shortcut) and apply the options saved in it.
+--- Ctrl+= / Ctrl+- / Ctrl+0: the next font size up (dir 1), down (-1) or
+--- the default (0).  Saved like the menu's slider; the window keeps its size
+--- and the number of rows and columns follows.
+function M.step_font_size(window, pane, dir)
+  if dir == 0 then
+    window:perform_action(act.ResetFontSize, pane) -- wezterm's own zoom, if any
+    return save_text(function(s) s.font_size = nil end)
+  end
+  local now = text_now(window)
+  local i = math.max(1, math.min(#now.steps, now.size + dir))
+  if i ~= now.size then save_text(function(s) s.font_size = now.steps[i] end) end
+end
+
+---------------------------------------------------------------------------
+-- Keys for programs in the pane
+
+-- Programs that take Shift+Enter as ESC CR (Meta+Enter: a new line, what
+-- Claude Code's /terminal-setup binds) and paste images on their own key
+-- (Claude Code on Windows: Alt+V).  Matched by the name of the program in
+-- the pane or one it was started from; node / bun by their script path.
+M.tui_apps = {
+  claude = { image_paste = { key = 'v', mods = 'ALT' } },
+}
+
+local function exe_name(info)
+  return ((info.name or ''):lower():gsub('%.exe$', ''))
+end
+
+local function app_of(info)
+  local n = exe_name(info)
+  if M.tui_apps[n] then return n end
+  if n == 'node' or n == 'bun' then
+    local args = table.concat(info.argv or {}, ' '):lower()
+    for app in pairs(M.tui_apps) do
+      if args:find(app, 1, true) then return app end
+    end
+  end
+  return nil
+end
+
+--- The program the keys go to.  Windows has no foreground process group, so
+--- the newest program on the pane's console counts, and from it up to the
+--- shell the first one listed in M.tui_apps (a command Claude Code runs
+--- still means Claude Code).  Returns the app (or nil) and the newest
+--- program's name.
+function M.pane_app(pane)
+  local ok, info = pcall(function() return pane:get_foreground_process_info() end)
+  if not ok or not info then return nil, nil end
+  local newest = exe_name(info)
+  local cur = info
+  for _ = 1, 16 do
+    local app = app_of(cur)
+    if app then return app, newest end
+    if not cur.ppid or cur.ppid == 0 then break end
+    local ok2, parent = pcall(wezterm.procinfo.get_info_for_pid, cur.ppid)
+    if not ok2 or not parent or exe_name(parent) == 'wezterm-gui' then break end
+    cur = parent
+  end
+  return nil, newest
+end
+
+-- Shift+Enter: a new line.  Claude Code gets ESC CR; everything else the
+-- key itself (PowerShell adds a line to the command).
+local function new_line(window, pane)
+  if M.pane_app(pane) then
+    window:perform_action(act.SendString '\x1b\r', pane)
+  else
+    window:perform_action(act.SendKey { key = 'Enter', mods = 'SHIFT' }, pane)
+  end
+end
+
+local SHELLS = { powershell = true, pwsh = true }
+
+-- Ctrl+V: paste.  Text is pasted by the terminal, except at a PowerShell
+-- prompt, which pastes on its own (multi-line text stays in the prompt
+-- instead of running line by line).  Without text in the clipboard (an
+-- image) the program reads it on its own key.
+local function paste(window, pane)
+  local app, newest = M.pane_app(pane)
+  local ok, has_text = pcall(function() return window:clipboard_has_text() end)
+  if not ok then has_text = true end
+  if not has_text then
+    local key = app and M.tui_apps[app].image_paste or { key = 'v', mods = 'CTRL' }
+    return window:perform_action(act.SendKey(key), pane)
+  end
+  if not app and SHELLS[newest] then
+    return window:perform_action(act.SendKey { key = 'v', mods = 'CTRL' }, pane)
+  end
+  window:perform_action(act.PasteFrom 'Clipboard', pane)
+end
+
+-- Ctrl+C: copy the selection; without one, Ctrl+C goes to the program.
+local function copy(window, pane)
+  local sel = window:get_selection_text_for_pane(pane)
+  if sel and sel ~= '' then
+    window:perform_action(act.CopyTo 'Clipboard', pane)
+    window:perform_action(act.ClearSelection, pane)
+  else
+    window:perform_action(act.SendKey { key = 'c', mods = 'CTRL' }, pane)
+  end
+end
+
+M._keys = { new_line = new_line, paste = paste, copy = copy } -- for tests
+
+-- Add a key binding unless wezterm.lua already binds that key.
+local function bind(config, key, mods, action)
+  for _, k in ipairs(config.keys) do
+    if k.key == key and (k.mods or 'NONE') == mods then return end
+  end
+  table.insert(config.keys, { key = key, mods = mods, action = action })
+end
+
+--- Register the settings menu (gear button, F12, Ctrl+Shift+,), the keys
+--- above, and apply the options saved in the menu.
 function M.setup(config)
   wezterm.on('settings-button-click', function(window, pane)
     M.open_menu(window, pane)
@@ -524,9 +878,31 @@ function M.setup(config)
     M.open_menu(window, pane)
   end)
   config.keys = config.keys or {}
-  table.insert(config.keys, { key = ',', mods = 'CTRL|SHIFT', action = act.EmitEvent 'crt-open-settings' })
-  -- Values changed in the Settings submenu (wezterm_options.json) win over
-  -- what wezterm.lua set before this call.
+  local cb = wezterm.action_callback
+  bind(config, 'F12', 'NONE', act.EmitEvent 'crt-open-settings')
+  bind(config, ',', 'CTRL|SHIFT', act.EmitEvent 'crt-open-settings')
+  bind(config, 'Enter', 'SHIFT', cb(new_line))
+  -- letters by position too, so they work with any keyboard layout
+  local paste_cb, copy_cb = cb(paste), cb(copy)
+  for _, k in ipairs { 'v', 'phys:V' } do bind(config, k, 'CTRL', paste_cb) end
+  for _, k in ipairs { 'c', 'phys:C' } do bind(config, k, 'CTRL', copy_cb) end
+  local bigger = cb(function(w, p) M.step_font_size(w, p, 1) end)
+  local smaller = cb(function(w, p) M.step_font_size(w, p, -1) end)
+  local reset = cb(function(w, p) M.step_font_size(w, p, 0) end)
+  for _, k in ipairs { '=', '+', 'Add' } do bind(config, k, 'CTRL', bigger) end
+  for _, k in ipairs { '=', '+' } do bind(config, k, 'CTRL|SHIFT', bigger) end
+  for _, k in ipairs { '-', 'Subtract' } do bind(config, k, 'CTRL', smaller) end
+  for _, k in ipairs { '0', 'Numpad0' } do bind(config, k, 'CTRL', reset) end
+  bind(config, '0', 'CTRL|SHIFT', reset)
+  -- Ctrl+Shift+- (Ctrl+_) goes to the program: undo in Claude Code
+  bind(config, '-', 'CTRL|SHIFT', act.DisableDefaultAssignment)
+  -- a font size change keeps the window size (wezterm's default grows or
+  -- shrinks the window with the text)
+  if config.adjust_window_size_when_changing_font_size == nil then
+    config.adjust_window_size_when_changing_font_size = false
+  end
+  -- Values changed in All settings (wezterm_options.json) win over what
+  -- wezterm.lua set before this call.
   options.apply(config)
   return config
 end

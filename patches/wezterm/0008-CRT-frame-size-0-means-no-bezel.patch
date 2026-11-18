@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: cool-retro-term-wezterm <build@localhost>
 Date: Mon, 16 Nov 2026 20:45:50 +0100
-Subject: [PATCH 8/9] CRT: frame size 0 means no bezel
+Subject: [PATCH 08/10] CRT: frame size 0 means no bezel
 
 Most of the bezel in the middle of an edge is the margin the bulge leaves
 around the picture; the frame size only adds a few pixels.  Below a frame

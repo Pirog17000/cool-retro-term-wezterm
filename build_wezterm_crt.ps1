@@ -146,6 +146,8 @@ Copy-Item "$assets\mesa\opengl32.dll" "$dist\mesa\"
 Copy-Item "$root\wezterm-crt\wezterm.lua" $dist
 Copy-Item "$root\wezterm-crt\wezterm_modules" $dist -Recurse
 Copy-Item "$root\wezterm-crt\update.ps1" $dist
+# Explorer context menu "Open cool-retro-term here": add / remove
+Copy-Item "$root\wezterm-crt\context-menu-add.bat", "$root\wezterm-crt\context-menu-remove.bat" $dist
 
 # Retro fonts used by the cool-retro-term profiles
 $fontsDst = Join-Path $dist 'fonts'

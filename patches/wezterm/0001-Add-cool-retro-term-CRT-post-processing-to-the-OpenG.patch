@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: cool-retro-term-wezterm <build@localhost>
 Date: Mon, 16 Nov 2026 16:16:19 +0100
-Subject: [PATCH 1/9] Add cool-retro-term CRT post-processing to the OpenGL
+Subject: [PATCH 01/10] Add cool-retro-term CRT post-processing to the OpenGL
  renderer
 
 - config.crt: cool-retro-term profile + per-effect overrides
