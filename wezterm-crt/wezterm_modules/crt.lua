@@ -779,13 +779,25 @@ M.tui_apps = {
   claude = { image_paste = { key = 'v', mods = 'ALT' } },
 }
 
+-- "claude.exe", "C:\...\claude.exe" -> "claude".  Also when the file of a
+-- running program was renamed: Claude Code's updater renames the running
+-- claude.exe to "claude.exe.old.<time>.<pid>", and Windows then reports
+-- that name for the process.
+local function base_name(s)
+  s = (s or ''):lower():gsub('^.*[\\/]', '')
+  return s:match('^(.-)%.exe') or s
+end
+
 local function exe_name(info)
-  return ((info.name or ''):lower():gsub('%.exe$', ''))
+  return base_name(info.name)
 end
 
 local function app_of(info)
   local n = exe_name(info)
   if M.tui_apps[n] then return n end
+  -- the command line keeps the name the program was started with
+  local started = base_name((info.argv or {})[1])
+  if M.tui_apps[started] then return started end
   if n == 'node' or n == 'bun' then
     local args = table.concat(info.argv or {}, ' '):lower()
     for app in pairs(M.tui_apps) do

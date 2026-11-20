@@ -123,7 +123,10 @@ layout.  Which program has the keys is found from the pane's process tree
 (Windows has no foreground process group: the newest program on the console
 and, walking up to the shell, the first one listed in `crt.tui_apps`, so a
 command Claude Code runs still counts as Claude Code; an npm install of
-Claude Code runs in `node.exe` and is matched by its script path).
+Claude Code runs in `node.exe` and is matched by its script path).  A
+program is also matched by the name it was started with: Claude Code's
+updater renames a running `claude.exe` to `claude.exe.old.<number>`, and
+Windows then reports that name.
 
 Explorer context menu: `context-menu-add.bat` (next to the exe) adds **Open
 cool-retro-term here** to the right-click menu of folders, of empty space
